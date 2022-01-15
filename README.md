@@ -1,20 +1,28 @@
 ### A library to easily build & train Transformer models for forecasting.
 
-This library uses the Tensorflow & Tensorflow-Probability deep learning libraries to implement & train the models.
-Minimum Supported versions are: Tensorflow v2.4.0 & Tensorflow-Probability v0.10.0
+This library uses the Tensorflow & Tensorflow-Probability deep learning libraries to implement & train the models.  
+
+#####Supported versions:     
+
+Tensorflow [2.4.0 - 2.7.0]   
+Tensorflow-Probability [0.10.0 - 0.12.0]  
 
 A typical workflow will have these stages:
 
-
-### Build the Dataset Object 
-###### This object provides a uniform interface for creating training, testing & inference datasets. 
-###### It is assumed that a processed & consolidated dataset is available in the form of a Pandas Dataframe.
-
-##### Read/Prepare the dataset as a Pandas Dataframe
+##### Import basic libraries
+````
+import tfr
+import pandas as pd
+import numpy as np
+import pprint
+````
+##### Build the Dataset Object - a uniform interface for creating training, testing & inference datasets
+````
 df = pd.read_csv(...)
-
+````
 ##### Create a dictionary with following column groups based on the dataframe
 
+````
 'id_col': Unique identifier for time-series' in the dataset. Mandatory.  
 'target_col': Target Column. Mandatory.  
 'time_index_col': Any Date or Integer index column that can be used to sort the time-series in ascending order. Mandatory.  
@@ -32,18 +40,17 @@ columns_dict = {'id_col':'id',
                 'target_col':'Sales',  
                 'time_index_col':'date',  
                 'static_num_col_list':[],  
-                   'static_cat_col_list':['item_id','cat_id','store_id','state_id'],  
-                   'temporal_known_num_col_list':['abs_age'],  
-                   'temporal_unknown_num_col_list':['sell_price'],  
-                   'temporal_known_cat_col_list':['month','wday','Week','event_name_1','event_type_1'],  
-                   'temporal_unknown_cat_col_list':['snap_CA','snap_TX','snap_WI'],  
-                   'strata_col_list':['state_id','store_id'],  
-                   'sort_col_list':['id','date'],  
-                   'wt_col':'Weight'}  
-                 
+                'static_cat_col_list':['item_id','cat_id','store_id','state_id'],  
+                'temporal_known_num_col_list':['abs_age'],  
+                'temporal_unknown_num_col_list':['sell_price'],  
+                'temporal_known_cat_col_list':['month','wday','Week','event_name_1','event_type_1'],  
+                'temporal_unknown_cat_col_list':['snap_CA','snap_TX','snap_WI'],  
+                'strata_col_list':['state_id','store_id'],  
+                'sort_col_list':['id','date'],  
+                'wt_col':'Weight'}  
+````                 
 ##### Create the dataset object using the dictionary defined above.
-from tfr import tfr_dataset  
-
+````
 col_dict: Columns grouping dictionary defined above.  
 window_len: int(maximum look back history + forecast horizon )    
 fh: int(forecast horizon)    
@@ -52,38 +59,37 @@ min_nz: Min. no. of non zero values in the Target series within the window_len f
 PARALLEL_DATA_JOBS: Option to use parallel processing for training batches generation.  
 PARALLEL_DATA_JOBS_BATCHSIZE: Batch size to process within each of the parallel jobs.    
  
-data_obj = tfr_dataset(col_dict=columns_dict,   
-                       window_len=26,   
-                       fh=13,   
-                       batch=16,   
-                       min_nz=1,   
-                       PARALLEL_DATA_JOBS=1,   
-                       PARALLEL_DATA_JOBS_BATCHSIZE=64)                    
-                 
+data_obj = tfr.tfr_dataset(col_dict=columns_dict,   
+                           window_len=26,   
+                           fh=13,   
+                           batch=16,   
+                           min_nz=1,   
+                           PARALLEL_DATA_JOBS=1,   
+                           PARALLEL_DATA_JOBS_BATCHSIZE=64)                    
+````                 
 ##### Create train & test datasets to be passed to the model (to be built soon).
+````
 df = Processed Pandas Dataframe read earlier.  
 train_till = Date/time_index_col cut-off for training data.   
 test_till = Date/time_index_col cut-off for testing data. Typically this will be 'train_till + forecast_horizon'  
 
 trainset, testset = data_obj.train_test_dataset(df,   
-                                               train_till=pd.to_datetime('2015-12-31', format='%Y-%M-%d'),   
-                                               test_till=pd.to_datetime('2016-01-31', format='%Y-%M-%d'))  
-
+                                                train_till=pd.to_datetime('2015-12-31', format='%Y-%M-%d'),   
+                                                test_till=pd.to_datetime('2016-01-31', format='%Y-%M-%d'))  
+````
 ##### Obtain Column info dictionary & Vocab dictionary (required arguments for model)  
+````
 col_index_dict = data_obj.col_index_dict  
 vocab = data_obj.vocab_list(df)  
-
+````
 ##### Create Inference dataset for final predctions. This can be done separately from above.
-history_till, future_till: Similar to train_till & test_till but for inference.  
-
+````
 infer_dataset = data_obj.infer_dataset(df,   
                                        history_till=pd.to_datetime('2015-12-31', format='%Y-%M-%d'),   
                                        future_till=pd.to_datetime('2016-01-31', format='%Y-%M-%d'))  
-
-### Build Model
-
-from tfr import Transformer_Model_Builder  
-
+````
+##### Build Model
+````
 num_layers: Int. Specify no. of attention layers in the Transformer model. Typical range [1-4]    
 num_heads: Int. No. of heads to be used for self attention computation. Typical range [1-4]  
 d_model: Int. Model Dimension. Typical range [32,64,128]. Multiple of num_heads.  
@@ -94,20 +100,20 @@ dropout_rate: % Dropout for regularization
 trainset, testset: tf.data.Dataset datasources obtained above  
 Returns the model object  
   
-model = Transformer_Model_Builder(col_index_dict = col_index_dict,  
-                                  vocab_dict = vocab,  
-                                  num_layers = 2,  
-                                  num_heads = 4,  
-                                  d_model = 64,  
-                                  forecast_horizon = 13,  
-                                  max_inp_len = 13,  
-                                  loss_type = 'Point',  
-                                  dropout_rate=0.1,  
-                                  trainset = trainset,  
-                                  testset = testset)  
-                                  
+model = tfr.Transformer_Model_Builder(col_index_dict = col_index_dict,  
+                                      vocab_dict = vocab,  
+                                      num_layers = 2,  
+                                      num_heads = 4,  
+                                      d_model = 64,  
+                                      forecast_horizon = 13,  
+                                      max_inp_len = 13,  
+                                      loss_type = 'Point',  
+                                      dropout_rate=0.1,  
+                                      trainset = trainset,  
+                                      testset = testset)  
+````                                  
 ##### Train model  
-
+````
 train_dataset, test_dataset: tf.data.Dataset objects  
 loss_function: One of the supported loss functions. See the output of pprint.pprint(supported_losses) for usage.  
 metric: 'MAE' or 'MSE'  
@@ -119,11 +125,7 @@ weighted_training: True/False.
 model_prefix: Path where to save models  
 logdir: Training logs location. Can be viewed with Tensorboard.  
 
-from tfr import * 
-from tfr import supported_losses  
-import pprint  
-
-pprint.pprint(supported_losses)  
+pprint.pprint(tfr.supported_losses)  
 
 best_model = model.train(train_dataset = trainset,   
                          test_dataset = testset,   
@@ -137,7 +139,9 @@ best_model = model.train(train_dataset = trainset,
                          weighted_training=True,  
                          model_prefix='test_models\wal_test_huber',  
                          logdir='test_logs')  
-
-### Predict
-
-forecast_df = model.infer(infer_dataset)                           
+````
+##### Load Model & Predict
+````
+model = tfr.Load_Model(model_path)
+forecast_df = model.infer(infer_dataset)                     
+````  

@@ -1,9 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
-
-
 import tensorflow as tf
 import tensorflow_probability as tfp
 tfd = tfp.distributions
@@ -26,12 +23,7 @@ import gc
 import math as m
 import time
 
-
-# In[3]:
-
-
-
-class dl_dataset:
+class tfr_dataset:
     def __init__(self, col_dict, window_len, fh, batch, min_nz, PARALLEL_DATA_JOBS, PARALLEL_DATA_JOBS_BATCHSIZE):
         """
         col_dict: dictionary of various column groups {id_col:'',

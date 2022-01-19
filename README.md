@@ -2,7 +2,7 @@
 
 This library uses the Tensorflow & Tensorflow-Probability deep learning libraries to implement & train the models.  
 
-#####Supported versions:     
+##### Supported versions:     
 
 Tensorflow [2.4.0 - 2.7.0]   
 Tensorflow-Probability [0.10.0 - 0.12.0]  

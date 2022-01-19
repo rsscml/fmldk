@@ -7,7 +7,7 @@ This library uses the Tensorflow & Tensorflow-Probability deep learning librarie
 Tensorflow [2.4.0 - 2.7.0]   
 Tensorflow-Probability [0.10.0 - 0.12.0]  
 
-A typical workflow will have these stages:
+A typical workflow will look like this:
 
 ##### Import basic libraries
 ````
@@ -18,7 +18,13 @@ import pprint
 ````
 ##### Build the Dataset Object - a uniform interface for creating training, testing & inference datasets
 ````
+# Ensure the dataset meets the following criteria:
+a) No NaNs or infs
+b) No mixed datatypes in any column
+b) No column names may contain spaces
+
 df = pd.read_csv(...)
+
 ````
 ##### Create a dictionary with following column groups based on the dataframe
 
@@ -99,18 +105,39 @@ loss_type: One of ['Point','Quantile'] for Point forecasts or ['Normal','Poisson
 dropout_rate: % Dropout for regularization  
 trainset, testset: tf.data.Dataset datasources obtained above  
 Returns the model object  
+
+Select a loss_type & loss_function from the following:
+   
+pprint.pprint(tfr.supported_losses) 
+
+{'Huber': ['loss_type: Point', 'Usage: Huber(delta=1.0, sample_weights=False)'],
+ 'Negbin': ['loss_type: Negbin', 'Usage: Negbin_NLL_Loss(sample_weights=False)'],
+ 'Normal': ['loss_type: Normal', 'Usage: Normal_NLL_Loss(sample_weights=False)'],
+ 'Poisson': ['loss_type: Poisson', 'Usage: Poisson_NLL_Loss(sample_weights=False)'],
+ 'Quantile': ['loss_type: Quantile', 'Usage: QuantileLoss_v2(quantiles=[0.5], sample_weights=False)'],
+ 'RMSE': ['loss_type: Point', 'Usage: RMSE(sample_weights=False)']
+ }
+
+e.g.
+loss_type = 'Quantile' 
+loss_fn = QuantileLoss_Weighted(quantiles=[0.6])
   
-model = tfr.Transformer_Model_Builder(col_index_dict = col_index_dict,  
-                                      vocab_dict = vocab,  
-                                      num_layers = 2,  
-                                      num_heads = 4,  
-                                      d_model = 64,  
-                                      forecast_horizon = 13,  
-                                      max_inp_len = 13,  
-                                      loss_type = 'Point',  
-                                      dropout_rate=0.1,  
-                                      trainset = trainset,  
-                                      testset = testset)  
+try:
+    del model
+except:
+    pass
+    
+model = Simple_Transformer(col_index_dict = col_index_dict,
+                           vocab_dict = vocab,
+                           num_layers = 2,
+                           num_heads = 4,
+                           d_model = 64,
+                           forecast_horizon = 13,
+                           max_inp_len = 13,
+                           loss_type = 'Quantile,
+                           dropout_rate=0.1)
+
+model.build() 
 ````                                  
 ##### Train model  
 ````
@@ -125,23 +152,55 @@ weighted_training: True/False.
 model_prefix: Path where to save models  
 logdir: Training logs location. Can be viewed with Tensorboard.  
 
-pprint.pprint(tfr.supported_losses)  
-
-best_model = model.train(train_dataset = trainset,   
-                         test_dataset = testset,   
-                         loss_function = loss_fn,                
-                         metric='MSE',  
-                         learning_rate=0.0001,  
-                         max_epochs=2,  
-                         min_epochs=1,  
-                         steps_per_epoch=5,  
-                         patience=2,   
-                         weighted_training=True,  
-                         model_prefix='test_models\wal_test_huber',  
-                         logdir='test_logs')  
+best_model = model.train(train_dataset=trainset,   
+                         test_dataset=testset,
+                         loss_function=loss_fn,              
+                         metric='MSE',
+                         learning_rate=0.0001,
+                         max_epochs=2,
+                         min_epochs=1,
+                         train_steps_per_epoch=10,
+                         test_steps_per_epoch=5,
+                         patience=2,
+                         weighted_training=True,
+                         model_prefix='test_models\tfr_model',
+                         logdir='test_logs')                         
+                         
 ````
 ##### Load Model & Predict
+Skip 'model.build()' if doing only inference using a saved model.
+
 ````
-model = tfr.Load_Model(model_path)
-forecast_df = model.infer(infer_dataset)                     
+model.load(model_path='test_models\tfr_model_1')
+forecast_df = model.infer(infer_dataset)
+                     
 ````  
+
+##### Additionally, you may use feature weighted transformer
+
+````
+model = Feature_Weighted_Transformer(col_index_dict = col_index_dict,
+                                     vocab_dict = vocab,
+                                     num_layers = 2,
+                                     num_heads = 4,
+                                     d_model = 64,
+                                     forecast_horizon = 13,
+                                     max_inp_len = 13,
+                                     loss_type = 'Quantile,
+                                     dropout_rate=0.1)
+model.build()
+
+model.train(...) -- usage identical to Simple_Transformer
+
+# Inference returns two outputs:
+
+forecast_df, feature_imp = model.infer(...)
+
+where, 
+    forecast_df - forecasts dataframe
+    feature_imp - a list of variable importance dataframes in the following order: static_vars_imp_df, historical_vars_imp_df, future_vars_imp_df 
+
+````
+
+
+

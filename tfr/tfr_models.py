@@ -57,7 +57,6 @@ def GumbelSample(a, b, n_samples=1):
     dist = tfd.Gumbel(loc=a, scale=b)
     return tf.reduce_mean(tf.stop_gradient(dist.sample(sample_shape=n_samples)), axis=0)
 
-
 # Model Class - Dense Transformer w/ Variable Selection
 
 # Positional Encoding
@@ -633,6 +632,7 @@ class all_variable_select_concat_layer(tf.keras.layers.Layer):
         return tfr_input, dynamic_weights   
 
 
+
 # Variable Weighted Transformer Model
 
 class VarTransformer(tf.keras.Model):
@@ -838,7 +838,6 @@ class Transformer(tf.keras.Model):
         else:
             return out, parameters
 
-
 # Transformer Wrapper
 
 class Transformer_Model(tf.keras.Model):
@@ -1039,254 +1038,320 @@ class Transformer_Model(tf.keras.Model):
          
         return o, s
     
-    def trainstep(self, optimizer, x_train, y_train, scale, wts, training):
+    
+def Transformer_Train(model, 
+                      train_dataset, 
+                      test_dataset, 
+                      loss_type,
+                      loss_function, 
+                      metric, 
+                      learning_rate,
+                      max_epochs, 
+                      min_epochs,
+                      train_steps_per_epoch,
+                      test_steps_per_epoch,
+                      patience,
+                      weighted_training,
+                      model_prefix,
+                      logdir):
+    """
+     train_dataset, test_dataset: tf.data.Dataset iterator for train & test datasets 
+     loss_type: One of ['Point','Quantile','Normal','Poisson','Negbin']
+     loss_function: One of the supported loss functions in loss library
+     metric: 'MAE' or 'MSE' 
+     max_epochs: Max. training epochs
+     min_epochs: Min. Training epochs
+     *_steps_per_epoch: batches per epoch 
+     weighted_training: True/False
+     model_prefix: relative or absolute model path with a prefix for a model name
+     logdir: tensorflow training logs for tensorboard
+        
+    """
+    
+    def trainstep(model, optimizer, x_train, y_train, scale, wts, training):
         with tf.GradientTape() as tape:
-            o, s = self.call(x_train, training=training)
-            if self.loss_type in ['Normal','Poisson','Negbin']:
-                if self.weighted_training:
-                    loss = self.loss(y_train*scale[:,-self.f_len:,:], [s, wts])
+            o, s = model(x_train, training=training)
+            out_len = tf.shape(s)[1]
+            if loss_type in ['Normal','Poisson','Negbin']:
+                if weighted_training:
+                    loss = loss_function(y_train*scale[:,-out_len:,:], [s, wts])
                 else:
-                    loss = self.loss(y_train*scale[:,-self.f_len:,:], s)                           
-            elif self.loss_type in ['Point']:
-                if self.weighted_training:                               
-                    loss = self.loss(y_train, [o, wts])
+                    loss = loss_function(y_train*scale[:,-out_len:,:], s)                           
+            elif loss_type in ['Point']:
+                if weighted_training:                               
+                    loss = loss_function(y_train, [o, wts])
                 else:
-                    loss = self.loss(y_train, o)
-            elif self.loss_type in ['Quantile']:
-                if self.weighted_training:                               
-                    loss = self.loss(y_train, [o, wts])
+                    loss = loss_function(y_train, o)
+            elif loss_type in ['Quantile']:
+                if weighted_training:                               
+                    loss = loss_function(y_train, [o, wts])
                 else:
-                    loss = self.loss(y_train, o)                                   
+                    loss = loss_function(y_train, o)                                   
             else:
                 raise ValueError("Invalid loss_type specified!")
-        grads = tape.gradient(loss, self.trainable_variables)
-        optimizer.apply_gradients((grad, var) for (grad, var) in zip(grads, self.trainable_variables) if grad is not None)
+        grads = tape.gradient(loss, model.trainable_variables)
+        optimizer.apply_gradients((grad, var) for (grad, var) in zip(grads, model.trainable_variables) if grad is not None)
         return loss, o
-      
-    def teststep(self, x_test, y_test, scale, wts, training):
-        o, s = self.call(x_test, training=training)
-        if self.loss_type in ['Normal','Poisson','Negbin']:
-            if self.weighted_training:
-                loss = self.loss(y_test*scale[:,-self.f_len:,:], [s, wts])
+    
+    def teststep(model, x_test, y_test, scale, wts, training):
+        o, s = model(x_test, training=training)
+        out_len = tf.shape(s)[1]
+        if loss_type in ['Normal','Poisson','Negbin']:
+            if weighted_training:
+                loss = loss_function(y_test*scale[:,-out_len:,:], [s, wts])
             else:
-                loss = self.loss(y_test*scale[:,-self.f_len:,:], s)                           
-        elif self.loss_type in ['Point']:
-            if self.weighted_training:                               
-                loss = self.loss(y_test, [o, wts])
+                loss = loss_function(y_test*scale[:,-out_len:,:], s)                           
+        elif loss_type in ['Point']:
+            if weighted_training:                               
+                loss = loss_function(y_test, [o, wts])
             else:
-                loss = self.loss(y_test, o)
-        elif self.loss_type in ['Quantile']:
-            if self.weighted_training:                               
-                loss = self.loss(y_test, [o, wts])
+                loss = loss_function(y_test, o)
+        elif loss_type in ['Quantile']:
+            if weighted_training:                               
+                loss = loss_function(y_test, [o, wts])
             else:
-                loss = self.loss(y_test, o)                                   
+                loss = loss_function(y_test, o)                                   
         else:
             raise ValueError("Invalid loss_type specified!")        
         return loss, o
+       
+    # training specific vars
+    optimizer = tf.keras.optimizers.Nadam(learning_rate=learning_rate)
+        
+    # model loss & metric
+    train_loss_avg = tf.keras.metrics.Mean('train_loss', dtype=tf.float32)
+    test_loss_avg = tf.keras.metrics.Mean('test_loss', dtype=tf.float32)
+
+    if metric == 'MAE':  
+        train_metric = tf.keras.metrics.MeanAbsoluteError('train_mae')
+        test_metric = tf.keras.metrics.MeanAbsoluteError('test_mae')
+    elif metric == 'MSE':
+        train_metric = tf.keras.metrics.MeanSquaredError('train_mse')
+        test_metric = tf.keras.metrics.MeanSquaredError('test_mse')
+    else:
+        raise ValueError("{}: Not a Supported Metric".format(metric))
+            
+    #logging
+    train_log_dir = str(logdir).rstrip('/') +'/train'
+    test_log_dir = str(logdir).rstrip('/')+'/test'
+    train_summary_writer = tf.summary.create_file_writer(train_log_dir)
+    test_summary_writer = tf.summary.create_file_writer(test_log_dir)
+        
+    # hold results
+    train_loss_results = []
+    train_metric_results = []
+    test_loss_results = []
+    test_metric_results = []
+        
+    # initialize model tracking vars
+    model_list = []
+    best_model = None
+    time_since_improvement = 0
+        
+    # train loop
+    for epoch in range(max_epochs):
+        print("Epoch {}/{}". format(epoch, max_epochs)) 
+        for step, (x_batch, y_batch, scale, wts) in enumerate(train_dataset):
+            if step > train_steps_per_epoch:
+                break
+            else:
+                train_loss, train_out = trainstep(model, optimizer, x_batch, y_batch, scale, wts, training=True)
+                out_len = tf.shape(train_out)[1]
+                train_loss_avg.update_state(train_loss)
+                if loss_type in ['Normal','Poisson','Negbin']:
+                    train_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], train_out)
+                elif loss_type in ['Point','Quantile']:
+                    train_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], train_out*scale[:,-out_len:,:])
+                with train_summary_writer.as_default():
+                    tf.summary.scalar('loss', train_loss_avg.result(), step=epoch)
+                    tf.summary.scalar('accuracy', train_metric.result(), step=epoch)
+          
+        for step, (x_batch, y_batch, scale, wts) in enumerate(test_dataset):
+            if step > train_steps_per_epoch:
+                break
+            else:
+                test_loss, test_out = teststep(model, x_batch, y_batch, scale, wts, training=False)
+                out_len = tf.shape(test_out)[1]
+                test_loss_avg.update_state(test_loss)
+                if loss_type in ['Normal','Poisson','Negbin']:
+                    test_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], test_out)
+                elif loss_type in ['Point','Quantile']:
+                    test_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], test_out*scale[:,-out_len:,:])
+                with test_summary_writer.as_default():
+                    tf.summary.scalar('loss', test_loss_avg.result(), step=epoch)
+                    tf.summary.scalar('accuracy', test_metric.result(), step=epoch)
+              
+        print("Epoch: {}, train_loss: {}, test_loss: {}, train_metric: {}, test_metric: {}".format(epoch, 
+                                                                                                    train_loss_avg.result().numpy(),
+                                                                                                    test_loss_avg.result().numpy(),
+                                                                                                    train_metric.result().numpy(),
+                                                                                                    test_metric.result().numpy()))
     
+        # record losses & metric in lists
+        train_loss_results.append(train_loss_avg.result().numpy())
+        train_metric_results.append(train_metric.result().numpy())
+        test_loss_results.append(test_loss_avg.result().numpy())
+        test_metric_results.append(test_metric.result().numpy())
+            
+        # reset states
+        train_loss_avg.reset_states()
+        train_metric.reset_states()
+        test_loss_avg.reset_states()
+        test_metric.reset_states()
+        
+        # Save Model
+        model_path = model_prefix + '_' + str(epoch) 
+        tf.keras.models.save_model(model, model_path)
+        model_list.append(model_path)
+            
+        # track best model
+        if test_loss_results[epoch]==np.min(test_loss_results):
+            best_model = model_path
+            # reset time_since_improvement
+            time_since_improvement = 0
+        else:
+            time_since_improvement += 1
+            
+        # remove older models
+        if len(model_list)>patience:
+            for m in model_list[:-patience]:
+                if m != best_model:
+                    try:
+                        shutil.rmtree(m)
+                    except:
+                        pass
+                
+        print("Best Model: ", best_model)
+        if (time_since_improvement > patience) and (epoch > min_epochs):
+            print("Terminating Training. Best Model path: {}".format(best_model))
+            break
+    
+    return best_model
+    
+    
+def Transformer_Infer(model, inputs, loss_type, hist_len, f_len, target_index):
+    infer_tensor, scale, id_arr, date_arr = inputs
+    scale = scale[:,-1:,-1]
+    window_len = int(hist_len + f_len)
+    output = []
+        
+    for i in range(f_len):
+        print("Forecasting Period: ", i+1)
+        out, dist = model(infer_tensor, training=False)
+            
+        # update target
+        if loss_type in ['Normal','Poisson','Negbin']:
+            dist = dist.numpy()
+            output.append(dist[:,i:i+1,0])
+            infer_arr = infer_tensor.numpy()
+            infer_arr[:,hist_len+i:hist_len+i+1,target_index] = out[:,i:i+1,0]/scale
+        elif loss_type in ['Point','Quantile']:
+            out = out.numpy()
+            output.append(out[:,i:i+1,0])
+            infer_arr = infer_tensor.numpy()
+            infer_arr[:,hist_len+i:hist_len+i+1,target_index] = out[:,i:i+1,0]
+            
+        # feedback updated hist + fh tensor
+        infer_tensor = tf.convert_to_tensor(infer_arr.astype(str), dtype=tf.string)
+            
+    output_arr = np.concatenate(output, axis=1) 
+        
+    # rescale if necessary
+    if loss_type in ['Normal','Poisson','Negbin']:
+        output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr), axis=1))
+    elif loss_type in ['Point','Quantile']:
+        output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr*scale.reshape(-1,1)), axis=1))
+    output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0:'id','value':'forecast'})
+    output_df = output_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
+        
+    # merge date_columns
+    date_df = pd.DataFrame(date_arr.reshape(-1,)).rename(columns={0:'period'})
+    forecast_df = pd.concat([date_df, output_df], axis=1)
+    forecast_df['forecast'] = forecast_df['forecast'].astype(np.float32)
+        
+    return forecast_df
+
+
+class Simple_Transformer:
+    def __init__(self, 
+                 col_index_dict,
+                 vocab_dict,
+                 num_layers,
+                 num_heads,
+                 d_model,
+                 forecast_horizon,
+                 max_inp_len,
+                 loss_type,
+                 dropout_rate):
+        
+        self.col_index_dict = col_index_dict
+        self.vocab_dict = vocab_dict
+        self.num_layers = num_layers
+        self.num_heads = num_heads
+        self.d_model = d_model
+        self.forecast_horizon = forecast_horizon
+        self.max_inp_len = max_inp_len
+        self.loss_type = loss_type
+        self.dropout_rate = dropout_rate
+        self.target_col_name, self.target_index = self.col_index_dict.get('target_index')
+    
+    def build(self):
+        tf.keras.backend.clear_session()
+        self.model = Transformer_Model(self.col_index_dict,
+                                  self.vocab_dict,
+                                  self.num_layers,
+                                  self.num_heads,
+                                  self.d_model,
+                                  self.forecast_horizon,
+                                  self.max_inp_len,
+                                  self.loss_type,
+                                  self.dropout_rate)
+        
     def train(self, 
               train_dataset, 
-              test_dataset, 
+              test_dataset,
               loss_function, 
               metric, 
               learning_rate,
               max_epochs, 
               min_epochs,
-              steps_per_epoch,
+              train_steps_per_epoch,
+              test_steps_per_epoch,
               patience,
               weighted_training,
               model_prefix,
               logdir):
-        """
-        train_dataset, test_dataset: tf.data.Dataset iterator for train & test datasets 
-        loss_function: One of the supported loss functions in loss library
-        metric: 'MAE' or 'MSE' 
-        max_epochs: Max. training epochs
-        min_epochs: Min. Training epochs
-        steps_per_epoch: batches per epoch 
-        weighted_training: True/False
-        model_prefix: relative or absolute model path with a prefix for a model name
-        logdir: tensorflow training logs for tensorboard
         
-        """
-        # training specific vars
-        self.optimizer = tf.keras.optimizers.Nadam(learning_rate=learning_rate)
-        self.loss = loss_function
-          
-        self.max_epochs = max_epochs 
-        self.min_epochs = min_epochs
-        self.train_steps = steps_per_epoch
-        self.test_steps = int(steps_per_epoch/2)
-        self.weighted_training = weighted_training
+        # Initialize Weights
+        for x,y,s,w in train_dataset.take(1):
+            self.model(x, training=False)
         
-        self.train_loss = tf.keras.metrics.Mean('train_loss', dtype=tf.float32)
-        self.test_loss = tf.keras.metrics.Mean('test_loss', dtype=tf.float32)
-
-        if metric == 'MAE':  
-            self.train_metric = tf.keras.metrics.MeanAbsoluteError('train_mae')
-            self.test_metric = tf.keras.metrics.MeanAbsoluteError('test_mae')
-        elif metric == 'MSE':
-            self.train_metric = tf.keras.metrics.MeanSquaredError('train_mse')
-            self.test_metric = tf.keras.metrics.MeanSquaredError('test_mse')
-        else:
-            raise ValueError("{}: Not a Supported Metric".format(metric))
-            
-        #logging
-        self.model_prefix = model_prefix
-        self.patience = patience
-        self.train_log_dir = str(logdir).rstrip('/') +'/train'
-        self.test_log_dir = str(logdir).rstrip('/')+'/test'
-        self.train_summary_writer = tf.summary.create_file_writer(self.train_log_dir)
-        self.test_summary_writer = tf.summary.create_file_writer(self.test_log_dir)
-        
-        # model loss & metric
-        train_loss_avg = self.train_loss
-        train_metric = self.train_metric
-        test_loss_avg = self.test_loss
-        test_metric = self.test_metric
-
-        # hold results
-        train_loss_results = []
-        train_metric_results = []
-        test_loss_results = []
-        test_metric_results = []
-        
-        # initialize model tracking vars
-        model_list = []
-        best_model = None
-        time_since_improvement = 0
-        
-        # train loop
-        for epoch in range(self.max_epochs):
-            print("Epoch {}/{}". format(epoch, self.max_epochs)) 
-            for step, (x_batch, y_batch, scale, wts) in enumerate(train_dataset):
-                if step > self.train_steps:
-                    break
-                else:
-                    train_loss, train_out = self.trainstep(self.optimizer, x_batch, y_batch, scale, wts, training=True)
-                    train_loss_avg.update_state(train_loss)
-                    if self.loss_type in ['Normal','Poisson','Negbin']:
-                        train_metric.update_state(y_batch[:,-self.f_len:,:]*scale[:,-self.f_len:,:], train_out)
-                    elif self.loss_type in ['Point','Quantile']:
-                        train_metric.update_state(y_batch[:,-self.f_len:,:]*scale[:,-self.f_len:,:], train_out*scale[:,-self.f_len:,:])
-                    with self.train_summary_writer.as_default():
-                      tf.summary.scalar('loss', train_loss_avg.result(), step=epoch)
-                      tf.summary.scalar('accuracy', train_metric.result(), step=epoch)
-          
-            for step, (x_batch, y_batch, scale, wts) in enumerate(test_dataset):
-                if step > self.test_steps:
-                    break
-                else:
-                    test_loss, test_out = self.teststep(x_batch, y_batch, scale, wts, training=False)
-                    test_loss_avg.update_state(test_loss)
-                    if self.loss_type in ['Normal','Poisson','Negbin']:
-                        test_metric.update_state(y_batch[:,-self.f_len:,:]*scale[:,-self.f_len:,:], test_out)
-                    elif self.loss_type in ['Point','Quantile']:
-                        test_metric.update_state(y_batch[:,-self.f_len:,:]*scale[:,-self.f_len:,:], test_out*scale[:,-self.f_len:,:])
-                    with self.test_summary_writer.as_default():
-                      tf.summary.scalar('loss', test_loss_avg.result(), step=epoch)
-                      tf.summary.scalar('accuracy', test_metric.result(), step=epoch)
-              
-            print("Epoch: {}, train_loss: {}, test_loss: {}, train_metric: {}, test_metric: {}".format(epoch, 
-                                                                                                   train_loss_avg.result().numpy(),
-                                                                                                   test_loss_avg.result().numpy(),
-                                                                                                   train_metric.result().numpy(),
-                                                                                                   test_metric.result().numpy()))
-    
-            # record losses & metric in lists
-            train_loss_results.append(train_loss_avg.result().numpy())
-            train_metric_results.append(train_metric.result().numpy())
-            test_loss_results.append(test_loss_avg.result().numpy())
-            test_metric_results.append(test_metric.result().numpy())
-            
-            # reset states
-            train_loss_avg.reset_states()
-            train_metric.reset_states()
-            test_loss_avg.reset_states()
-            test_metric.reset_states()
-        
-            # Save Model
-            model_path = self.model_prefix + '_' + str(epoch) 
-            tf.keras.models.save_model(self, model_path)
-            model_list.append(model_path)
-            
-            # track best model
-            if test_loss_results[epoch]==np.min(test_loss_results):
-                best_model = model_path
-                # reset time_since_improvement
-                time_since_improvement = 0
-            else:
-                time_since_improvement += 1
-            
-            # remove older models
-            if len(model_list)>self.patience:
-                for m in model_list[:-self.patience]:
-                    if m != best_model:
-                        try:
-                            shutil.rmtree(m)
-                        except:
-                            pass
-                
-            print("Best Model: ", best_model)
-            if (time_since_improvement > self.patience) and (epoch > self.min_epochs):
-                print("Terminating Training. Best Model path: {}".format(best_model))
-                break
-    
+        best_model = Transformer_Train(self.model, 
+                                       train_dataset, 
+                                       test_dataset, 
+                                       self.loss_type,
+                                       loss_function, 
+                                       metric, 
+                                       learning_rate,
+                                       max_epochs, 
+                                       min_epochs,
+                                       train_steps_per_epoch,
+                                       test_steps_per_epoch,
+                                       patience,
+                                       weighted_training,
+                                       model_prefix,
+                                       logdir)
         return best_model
+    
+    def load(self, model_path):
+        tf.keras.backend.clear_session()
+        self.model = tf.keras.models.load_model(model_path)
         
     def infer(self, inputs):
-        infer_tensor, scale, id_arr, date_arr = inputs
-        scale = scale[:,-1:,-1]
-        window_len = self.hist_len + self.f_len
-        output = []
+        forecast = Transformer_Infer(self.model, inputs, self.loss_type, self.max_inp_len, self.forecast_horizon, self.target_index)
         
-        for i in range(self.f_len):
-            print("Forecasting Period: ", i+1)
-            out, _ = self.call(infer_tensor, training=False)
-            out = out.numpy()
-            output.append(out[:,i:i+1,0])
-            
-            # update target
-            if self.loss_type in ['Normal','Poisson','Negbin']:
-                infer_arr = infer_tensor.numpy()
-                infer_arr[:,self.hist_len+i:self.hist_len+i+1,self.target_index] = out[:,i:i+1,0]/scale
-            elif self.loss_type in ['Point','Quantile']:
-                infer_arr = infer_tensor.numpy()
-                infer_arr[:,self.hist_len+i:self.hist_len+i+1,self.target_index] = out[:,i:i+1,0]
-            
-            # feedback updated hist + fh tensor
-            infer_tensor = tf.convert_to_tensor(infer_arr.astype(str), dtype=tf.string)
-            
-        output_arr = np.concatenate(output, axis=1) 
+        return forecast
         
-        # rescale if necessary
-        if self.loss_type in ['Normal','Poisson','Negbin']:
-            output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr), axis=1))
-        elif self.loss_type in ['Point','Quantile']:
-            output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr*scale.reshape(-1,1)), axis=1))
-        output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0:'id','value':'forecast'})
-        output_df = output_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
-        
-        # merge date_columns
-        date_df = pd.DataFrame(date_arr.reshape(-1,)).rename(columns={0:'period'})
-        forecast_df = pd.concat([date_df, output_df], axis=1)
-        forecast_df['forecast'] = forecast_df['forecast'].astype(np.float32)
-        
-        return forecast_df
-
-def Transformer_Model_Builder(col_index_dict,vocab_dict,num_layers,num_heads,d_model,forecast_horizon,max_inp_len,loss_type,
-                              dropout_rate, trainset, testset):
-    # clear session
-    tf.keras.backend.clear_session()
-    # Instantiate Model
-    model = Transformer_Model(col_index_dict,vocab_dict,num_layers,num_heads,d_model,forecast_horizon,max_inp_len,loss_type,dropout_rate=0.1)
-    
-    # Build Model (Initialize Weights)
-    for x,y,s,w in trainset.take(1):
-        model(x, training=False)
-        
-    return model
-
 
 # VarTransformer Wrapper
 
@@ -1534,276 +1599,351 @@ class VarTransformer_Model(tf.keras.Model):
               
         return o, s, ([stat_cols_ordered_list,past_cols_ordered_list,future_cols_ordered_list], [s_wts, p_wts, f_wts])
     
-    def trainstep(self, optimizer, x_train, y_train, scale, wts, training):
+    
+def VarTransformer_Train(model, 
+                      train_dataset, 
+                      test_dataset, 
+                      loss_type,
+                      loss_function, 
+                      metric, 
+                      learning_rate,
+                      max_epochs, 
+                      min_epochs,
+                      train_steps_per_epoch,
+                      test_steps_per_epoch,
+                      patience,
+                      weighted_training,
+                      model_prefix,
+                      logdir):
+    """
+     train_dataset, test_dataset: tf.data.Dataset iterator for train & test datasets 
+     loss_type: One of ['Point','Quantile','Normal','Poisson','Negbin']
+     loss_function: One of the supported loss functions in loss library
+     metric: 'MAE' or 'MSE' 
+     max_epochs: Max. training epochs
+     min_epochs: Min. Training epochs
+     *_steps_per_epoch: batches per epoch 
+     weighted_training: True/False
+     model_prefix: relative or absolute model path with a prefix for a model name
+     logdir: tensorflow training logs for tensorboard
+        
+    """
+    
+    def trainstep(model, optimizer, x_train, y_train, scale, wts, training):
         with tf.GradientTape() as tape:
-            o, s, feature_wts = self.call(x_train, training=training)
-            if self.loss_type in ['Normal','Poisson','Negbin']:
-                if self.weighted_training:
-                    loss = self.loss(y_train*scale[:,-self.f_len:,:], [s, wts])
+            o, s, f = model(x_train, training=training)
+            out_len = tf.shape(s)[1]
+            if loss_type in ['Normal','Poisson','Negbin']:
+                if weighted_training:
+                    loss = loss_function(y_train*scale[:,-out_len:,:], [s, wts])
                 else:
-                    loss = self.loss(y_train*scale[:,-self.f_len:,:], s)                           
-            elif self.loss_type in ['Point']:
-                if self.weighted_training:                               
-                    loss = self.loss(y_train, [o, wts])
+                    loss = loss_function(y_train*scale[:,-out_len:,:], s)                           
+            elif loss_type in ['Point']:
+                if weighted_training:                               
+                    loss = loss_function(y_train, [o, wts])
                 else:
-                    loss = self.loss(y_train, o)
-            elif self.loss_type in ['Quantile']:
-                if self.weighted_training:                               
-                    loss = self.loss(y_train, [o, wts])
+                    loss = loss_function(y_train, o)
+            elif loss_type in ['Quantile']:
+                if weighted_training:                               
+                    loss = loss_function(y_train, [o, wts])
                 else:
-                    loss = self.loss(y_train, o)                                   
+                    loss = loss_function(y_train, o)                                   
             else:
                 raise ValueError("Invalid loss_type specified!")
-        grads = tape.gradient(loss, self.trainable_variables)
-        optimizer.apply_gradients((grad, var) for (grad, var) in zip(grads, self.trainable_variables) if grad is not None)
+        grads = tape.gradient(loss, model.trainable_variables)
+        optimizer.apply_gradients((grad, var) for (grad, var) in zip(grads, model.trainable_variables) if grad is not None)
         return loss, o
-      
-    def teststep(self, x_test, y_test, scale, wts, training):
-        o, s, feature_wts = self.call(x_test, training=training)
-        if self.loss_type in ['Normal','Poisson','Negbin']:
-            if self.weighted_training:
-                loss = self.loss(y_test*scale[:,-self.f_len:,:], [s, wts])
+    
+    def teststep(model, x_test, y_test, scale, wts, training):
+        o, s, f = model(x_test, training=training)
+        out_len = tf.shape(s)[1]
+        if loss_type in ['Normal','Poisson','Negbin']:
+            if weighted_training:
+                loss = loss_function(y_test*scale[:,-out_len:,:], [s, wts])
             else:
-                loss = self.loss(y_test*scale[:,-self.f_len:,:], s)                           
-        elif self.loss_type in ['Point']:
-            if self.weighted_training:                               
-                loss = self.loss(y_test, [o, wts])
+                loss = loss_function(y_test*scale[:,-out_len:,:], s)                           
+        elif loss_type in ['Point']:
+            if weighted_training:                               
+                loss = loss_function(y_test, [o, wts])
             else:
-                loss = self.loss(y_test, o)
-        elif self.loss_type in ['Quantile']:
-            if self.weighted_training:                               
-                loss = self.loss(y_test, [o, wts])
+                loss = loss_function(y_test, o)
+        elif loss_type in ['Quantile']:
+            if weighted_training:                               
+                loss = loss_function(y_test, [o, wts])
             else:
-                loss = self.loss(y_test, o)                                   
+                loss = loss_function(y_test, o)                                   
         else:
             raise ValueError("Invalid loss_type specified!")        
         return loss, o
+       
+    # training specific vars
+    optimizer = tf.keras.optimizers.Nadam(learning_rate=learning_rate)
+        
+    # model loss & metric
+    train_loss_avg = tf.keras.metrics.Mean('train_loss', dtype=tf.float32)
+    test_loss_avg = tf.keras.metrics.Mean('test_loss', dtype=tf.float32)
 
+    if metric == 'MAE':  
+        train_metric = tf.keras.metrics.MeanAbsoluteError('train_mae')
+        test_metric = tf.keras.metrics.MeanAbsoluteError('test_mae')
+    elif metric == 'MSE':
+        train_metric = tf.keras.metrics.MeanSquaredError('train_mse')
+        test_metric = tf.keras.metrics.MeanSquaredError('test_mse')
+    else:
+        raise ValueError("{}: Not a Supported Metric".format(metric))
+            
+    #logging
+    train_log_dir = str(logdir).rstrip('/') +'/train'
+    test_log_dir = str(logdir).rstrip('/')+'/test'
+    train_summary_writer = tf.summary.create_file_writer(train_log_dir)
+    test_summary_writer = tf.summary.create_file_writer(test_log_dir)
+        
+    # hold results
+    train_loss_results = []
+    train_metric_results = []
+    test_loss_results = []
+    test_metric_results = []
+        
+    # initialize model tracking vars
+    model_list = []
+    best_model = None
+    time_since_improvement = 0
+        
+    # train loop
+    for epoch in range(max_epochs):
+        print("Epoch {}/{}". format(epoch, max_epochs)) 
+        for step, (x_batch, y_batch, scale, wts) in enumerate(train_dataset):
+            if step > train_steps_per_epoch:
+                break
+            else:
+                train_loss, train_out = trainstep(model, optimizer, x_batch, y_batch, scale, wts, training=True)
+                out_len = tf.shape(train_out)[1]
+                train_loss_avg.update_state(train_loss)
+                if loss_type in ['Normal','Poisson','Negbin']:
+                    train_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], train_out)
+                elif loss_type in ['Point','Quantile']:
+                    train_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], train_out*scale[:,-out_len:,:])
+                with train_summary_writer.as_default():
+                    tf.summary.scalar('loss', train_loss_avg.result(), step=epoch)
+                    tf.summary.scalar('accuracy', train_metric.result(), step=epoch)
+          
+        for step, (x_batch, y_batch, scale, wts) in enumerate(test_dataset):
+            if step > train_steps_per_epoch:
+                break
+            else:
+                test_loss, test_out = teststep(model, x_batch, y_batch, scale, wts, training=False)
+                out_len = tf.shape(test_out)[1]
+                test_loss_avg.update_state(test_loss)
+                if loss_type in ['Normal','Poisson','Negbin']:
+                    test_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], test_out)
+                elif loss_type in ['Point','Quantile']:
+                    test_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], test_out*scale[:,-out_len:,:])
+                with test_summary_writer.as_default():
+                    tf.summary.scalar('loss', test_loss_avg.result(), step=epoch)
+                    tf.summary.scalar('accuracy', test_metric.result(), step=epoch)
+              
+        print("Epoch: {}, train_loss: {}, test_loss: {}, train_metric: {}, test_metric: {}".format(epoch, 
+                                                                                                    train_loss_avg.result().numpy(),
+                                                                                                    test_loss_avg.result().numpy(),
+                                                                                                    train_metric.result().numpy(),
+                                                                                                    test_metric.result().numpy()))
+    
+        # record losses & metric in lists
+        train_loss_results.append(train_loss_avg.result().numpy())
+        train_metric_results.append(train_metric.result().numpy())
+        test_loss_results.append(test_loss_avg.result().numpy())
+        test_metric_results.append(test_metric.result().numpy())
+            
+        # reset states
+        train_loss_avg.reset_states()
+        train_metric.reset_states()
+        test_loss_avg.reset_states()
+        test_metric.reset_states()
+        
+        # Save Model
+        model_path = model_prefix + '_' + str(epoch) 
+        tf.keras.models.save_model(model, model_path)
+        model_list.append(model_path)
+            
+        # track best model
+        if test_loss_results[epoch]==np.min(test_loss_results):
+            best_model = model_path
+            # reset time_since_improvement
+            time_since_improvement = 0
+        else:
+            time_since_improvement += 1
+            
+        # remove older models
+        if len(model_list)>patience:
+            for m in model_list[:-patience]:
+                if m != best_model:
+                    try:
+                        shutil.rmtree(m)
+                    except:
+                        pass
+                
+        print("Best Model: ", best_model)
+        if (time_since_improvement > patience) and (epoch > min_epochs):
+            print("Terminating Training. Best Model path: {}".format(best_model))
+            break
+    
+    return best_model
+        
+def VarTransformer_Infer(model, inputs, loss_type, hist_len, f_len, target_index):
+    infer_tensor, scale, id_arr, date_arr = inputs
+    scale = scale[:,-1:,-1]
+    window_len = hist_len + f_len
+    output = []
+    stat_wts_df = None 
+    encoder_wts_df = None 
+    decoder_wts_df = None
+        
+    for i in range(f_len):
+        print("Forecasting Period: ", i+1)
+        out, dist, feature_wts = model(infer_tensor, training=False)
+            
+        # update target
+        if loss_type in ['Normal','Poisson','Negbin']:
+            dist = dist.numpy()
+            output.append(dist[:,i:i+1,0])
+            infer_arr = infer_tensor.numpy()
+            infer_arr[:,hist_len+i:hist_len+i+1,target_index] = out[:,i:i+1,0]/scale
+        elif loss_type in ['Point','Quantile']:
+            out = out.numpy()
+            output.append(out[:,i:i+1,0])
+            infer_arr = infer_tensor.numpy()
+            infer_arr[:,hist_len+i:hist_len+i+1,target_index] = out[:,i:i+1,0]
+            
+        # feedback updated hist + fh tensor
+        infer_tensor = tf.convert_to_tensor(infer_arr.astype(str), dtype=tf.string)
+            
+        if i == (f_len - 1):
+            column_names_list, wts_list = feature_wts
+            stat_columns, encoder_columns, decoder_columns = column_names_list
+            stat_columns_string = []
+            encoder_columns_string = []
+            decoder_columns_string = []
+            for col in stat_columns:
+                stat_columns_string.append(col.numpy().decode("utf-8")) 
+            for col in encoder_columns:
+                encoder_columns_string.append(col.numpy().decode("utf-8"))
+            for col in decoder_columns:
+                decoder_columns_string.append(col.numpy().decode("utf-8"))
+                
+            stat_wts, encoder_wts, decoder_wts = wts_list
+            # Average feature weights across time dim
+            encoder_wts = encoder_wts.numpy()
+            decoder_wts = decoder_wts.numpy()
+            # convert wts to df    
+            encoder_wts_df = pd.DataFrame(encoder_wts, columns=encoder_columns_string)   
+            decoder_wts_df = pd.DataFrame(decoder_wts, columns=decoder_columns_string)    
+            if stat_wts is not None:
+                stat_wts = stat_wts.numpy()
+                stat_wts_df = pd.DataFrame(stat_wts, columns=stat_columns_string)   
+            
+    output_arr = np.concatenate(output, axis=1) 
+        
+    # rescale if necessary
+    if loss_type in ['Normal','Poisson','Negbin']:
+        output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr), axis=1))
+    elif loss_type in ['Point','Quantile']:
+        output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr*scale.reshape(-1,1)), axis=1))
+    output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0:'id','value':'forecast'})
+    output_df = output_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
+        
+    # merge date_columns
+    date_df = pd.DataFrame(date_arr.reshape(-1,)).rename(columns={0:'period'})
+    forecast_df = pd.concat([date_df, output_df], axis=1)
+    forecast_df['forecast'] = forecast_df['forecast'].astype(np.float32)
+        
+    # weights df merge with id
+    stat_wts_df = pd.concat([pd.DataFrame(id_arr.reshape(-1,1)), stat_wts_df], axis=1)
+    encoder_wts_df = pd.concat([pd.DataFrame(id_arr.reshape(-1,1)), encoder_wts_df], axis=1)
+    decoder_wts_df = pd.concat([pd.DataFrame(id_arr.reshape(-1,1)), decoder_wts_df], axis=1)
+    print(stat_wts_df.shape, encoder_wts_df.shape, decoder_wts_df.shape)
+        
+    return forecast_df, stat_wts_df, encoder_wts_df, decoder_wts_df
+
+
+class Feature_Weighted_Transformer:
+    def __init__(self, 
+                 col_index_dict,
+                 vocab_dict,
+                 num_layers,
+                 num_heads,
+                 d_model,
+                 forecast_horizon,
+                 max_inp_len,
+                 loss_type,
+                 dropout_rate):
+        
+        self.col_index_dict = col_index_dict
+        self.vocab_dict = vocab_dict
+        self.num_layers = num_layers
+        self.num_heads = num_heads
+        self.d_model = d_model
+        self.forecast_horizon = forecast_horizon
+        self.max_inp_len = max_inp_len
+        self.loss_type = loss_type
+        self.dropout_rate = dropout_rate
+        self.target_col_name, self.target_index = self.col_index_dict.get('target_index')
+    
+    def build(self):
+        tf.keras.backend.clear_session()
+        self.model = VarTransformer_Model(self.col_index_dict,
+                                  self.vocab_dict,
+                                  self.num_layers,
+                                  self.num_heads,
+                                  self.d_model,
+                                  self.forecast_horizon,
+                                  self.max_inp_len,
+                                  self.loss_type,
+                                  self.dropout_rate)
+        
     def train(self, 
               train_dataset, 
-              test_dataset, 
+              test_dataset,
               loss_function, 
               metric, 
               learning_rate,
               max_epochs, 
               min_epochs,
-              steps_per_epoch,
+              train_steps_per_epoch,
+              test_steps_per_epoch,
               patience,
               weighted_training,
               model_prefix,
               logdir):
-        """
-        train_dataset, test_dataset: tf.data.Dataset iterator for train & test datasets 
-        loss_function: One of the supported loss functions in loss library
-        metric: 'MAE' or 'MSE' 
-        max_epochs: Max. training epochs
-        min_epochs: Min. Training epochs
-        steps_per_epoch: batches per epoch 
-        weighted_training: True/False
-        model_prefix: relative or absolute model path with a prefix for a model name
-        logdir: tensorflow training logs for tensorboard
         
-        """
-        # training specific vars
-        self.optimizer = tf.keras.optimizers.Nadam(learning_rate=learning_rate)
-        self.loss = loss_function
-          
-        self.max_epochs = max_epochs 
-        self.min_epochs = min_epochs
-        self.train_steps = steps_per_epoch
-        self.test_steps = int(steps_per_epoch/2)
-        self.weighted_training = weighted_training
+        # Initialize Weights
+        for x,y,s,w in train_dataset.take(1):
+            self.model(x, training=False)
         
-        self.train_loss = tf.keras.metrics.Mean('train_loss', dtype=tf.float32)
-        self.test_loss = tf.keras.metrics.Mean('test_loss', dtype=tf.float32)
-
-        if metric == 'MAE':  
-            self.train_metric = tf.keras.metrics.MeanAbsoluteError('train_mae')
-            self.test_metric = tf.keras.metrics.MeanAbsoluteError('test_mae')
-        elif metric == 'MSE':
-            self.train_metric = tf.keras.metrics.MeanSquaredError('train_mse')
-            self.test_metric = tf.keras.metrics.MeanSquaredError('test_mse')
-        else:
-            raise ValueError("{}: Not a Supported Metric".format(metric))
-            
-        #logging
-        self.model_prefix = model_prefix
-        self.patience = patience
-        self.train_log_dir = str(logdir).rstrip('/') +'/train'
-        self.test_log_dir = str(logdir).rstrip('/')+'/test'
-        self.train_summary_writer = tf.summary.create_file_writer(self.train_log_dir)
-        self.test_summary_writer = tf.summary.create_file_writer(self.test_log_dir)
-        
-        # model loss & metric
-        train_loss_avg = self.train_loss
-        train_metric = self.train_metric
-        test_loss_avg = self.test_loss
-        test_metric = self.test_metric
-
-        # hold results
-        train_loss_results = []
-        train_metric_results = []
-        test_loss_results = []
-        test_metric_results = []
-        
-        # initialize model tracking vars
-        model_list = []
-        best_model = None
-        time_since_improvement = 0
-        
-        # train loop
-        for epoch in range(self.max_epochs):
-            print("Epoch {}/{}". format(epoch, self.max_epochs)) 
-            for step, (x_batch, y_batch, scale, wts) in enumerate(train_dataset):
-                if step > self.train_steps:
-                    break
-                else:
-                    train_loss, train_out = self.trainstep(self.optimizer, x_batch, y_batch, scale, wts, training=True)
-                    train_loss_avg.update_state(train_loss)
-                    if self.loss_type in ['Normal','Poisson','Negbin']:
-                        train_metric.update_state(y_batch[:,-self.f_len:,:]*scale[:,-self.f_len:,:], train_out)
-                    elif self.loss_type in ['Point','Quantile']:
-                        train_metric.update_state(y_batch[:,-self.f_len:,:]*scale[:,-self.f_len:,:], train_out*scale[:,-self.f_len:,:])
-                    with self.train_summary_writer.as_default():
-                      tf.summary.scalar('loss', train_loss_avg.result(), step=epoch)
-                      tf.summary.scalar('accuracy', train_metric.result(), step=epoch)
-          
-            for step, (x_batch, y_batch, scale, wts) in enumerate(test_dataset):
-                if step > self.test_steps:
-                    break
-                else:
-                    test_loss, test_out = self.teststep(x_batch, y_batch, scale, wts, training=False)
-                    test_loss_avg.update_state(test_loss)
-                    if self.loss_type in ['Normal','Poisson','Negbin']:
-                        test_metric.update_state(y_batch[:,-self.f_len:,:]*scale[:,-self.f_len:,:], test_out)
-                    elif self.loss_type in ['Point','Quantile']:
-                        test_metric.update_state(y_batch[:,-self.f_len:,:]*scale[:,-self.f_len:,:], test_out*scale[:,-self.f_len:,:])
-                    with self.test_summary_writer.as_default():
-                      tf.summary.scalar('loss', test_loss_avg.result(), step=epoch)
-                      tf.summary.scalar('accuracy', test_metric.result(), step=epoch)
-              
-            print("Epoch: {}, train_loss: {}, test_loss: {}, train_metric: {}, test_metric: {}".format(epoch, 
-                                                                                                   train_loss_avg.result().numpy(),
-                                                                                                   test_loss_avg.result().numpy(),
-                                                                                                   train_metric.result().numpy(),
-                                                                                                   test_metric.result().numpy()))
-    
-            # record losses & metric in lists
-            train_loss_results.append(train_loss_avg.result().numpy())
-            train_metric_results.append(train_metric.result().numpy())
-            test_loss_results.append(test_loss_avg.result().numpy())
-            test_metric_results.append(test_metric.result().numpy())
-            
-            # reset states
-            train_loss_avg.reset_states()
-            train_metric.reset_states()
-            test_loss_avg.reset_states()
-            test_metric.reset_states()
-        
-            # Save Model
-            model_path = self.model_prefix + '_' + str(epoch) 
-            tf.keras.models.save_model(self, model_path)
-            model_list.append(model_path)
-            
-            # track best model
-            if test_loss_results[epoch]==np.min(test_loss_results):
-                best_model = model_path
-                # reset time_since_improvement
-                time_since_improvement = 0
-            else:
-                time_since_improvement += 1
-            
-            # remove older models
-            if len(model_list)>self.patience:
-                for m in model_list[:-self.patience]:
-                    if m != best_model:
-                        try:
-                            shutil.rmtree(m)
-                        except:
-                            pass
-                
-            print("Best Model: ", best_model)
-            if (time_since_improvement > self.patience) and (epoch > self.min_epochs):
-                print("Terminating Training. Best Model path: {}".format(best_model))
-                break
-    
+        best_model = VarTransformer_Train(self.model, 
+                                          train_dataset, 
+                                          test_dataset, 
+                                          self.loss_type,
+                                          loss_function, 
+                                          metric, 
+                                          learning_rate,
+                                          max_epochs, 
+                                          min_epochs,
+                                          train_steps_per_epoch,
+                                          test_steps_per_epoch,
+                                          patience,
+                                          weighted_training,
+                                          model_prefix,
+                                          logdir)
         return best_model
+    
+    def load(self, model_path):
+        tf.keras.backend.clear_session()
+        self.model = tf.keras.models.load_model(model_path)
         
     def infer(self, inputs):
-        infer_tensor, scale, id_arr, date_arr = inputs
-        scale = scale[:,-1:,-1]
-        window_len = self.hist_len + self.f_len
-        output = []
-        stat_wts_df = None 
-        encoder_wts_df = None 
-        decoder_wts_df = None
+        forecast, stat_wts_df, encoder_wts_df, decoder_wts_df = VarTransformer_Infer(self.model, inputs, self.loss_type, self.max_inp_len, self.forecast_horizon, self.target_index)
         
-        for i in range(self.f_len):
-            print("Forecasting Period: ", i+1)
-            out, _, feature_wts = self.call(infer_tensor, training=False)
-            out = out.numpy()
-            output.append(out[:,i:i+1,0])
-            
-            # update target
-            if self.loss_type in ['Normal','Poisson','Negbin']:
-                infer_arr = infer_tensor.numpy()
-                infer_arr[:,self.hist_len+i:self.hist_len+i+1,self.target_index] = out[:,i:i+1,0]/scale
-            elif self.loss_type in ['Point','Quantile']:
-                infer_arr = infer_tensor.numpy()
-                infer_arr[:,self.hist_len+i:self.hist_len+i+1,self.target_index] = out[:,i:i+1,0]
-            
-            # feedback updated hist + fh tensor
-            infer_tensor = tf.convert_to_tensor(infer_arr.astype(str), dtype=tf.string)
-            
-            if i == (self.f_len - 1):
-                column_names_list, wts_list = feature_wts
-                stat_columns, encoder_columns, decoder_columns = column_names_list
-                stat_wts, encoder_wts, decoder_wts = wts_list
-                # Average feature weights across time dim
-                encoder_wts = encoder_wts.numpy()
-                decoder_wts = decoder_wts.numpy()
-                # convert wts to df    
-                encoder_wts_df = pd.DataFrame(encoder_wts, columns=encoder_columns)   
-                decoder_wts_df = pd.DataFrame(decoder_wts, columns=decoder_columns)    
-                if stat_wts is not None:
-                    stat_wts = stat_wts.numpy()
-                    stat_wts_df = pd.DataFrame(stat_wts, columns=stat_columns)   
-            
-        output_arr = np.concatenate(output, axis=1) 
+        return forecast, [stat_wts_df, encoder_wts_df, decoder_wts_df]
         
-        # rescale if necessary
-        if self.loss_type in ['Normal','Poisson','Negbin']:
-            output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr), axis=1))
-        elif self.loss_type in ['Point','Quantile']:
-            output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr*scale.reshape(-1,1)), axis=1))
-        output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0:'id','value':'forecast'})
-        output_df = output_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
-        
-        # merge date_columns
-        date_df = pd.DataFrame(date_arr.reshape(-1,)).rename(columns={0:'period'})
-        forecast_df = pd.concat([date_df, output_df], axis=1)
-        forecast_df['forecast'] = forecast_df['forecast'].astype(np.float32)
-        
-        # weights df merge with id
-        stat_wts_df = pd.concat([pd.DataFrame(id_arr.reshape(-1,1)), stat_wts_df], axis=1)
-        encoder_wts_df = pd.concat([pd.DataFrame(id_arr.reshape(-1,1)), encoder_wts_df], axis=1)
-        decoder_wts_df = pd.concat([pd.DataFrame(id_arr.reshape(-1,1)), decoder_wts_df], axis=1)
-        
-        return forecast_df, (stat_wts_df, encoder_wts_df, decoder_wts_df)
+                
 
-def Feature_Weighted_Transformer_Model_Builder(col_index_dict, vocab_dict, num_layers, num_heads, d_model, forecast_horizon,
-                                               max_inp_len, loss_type, dropout_rate, trainset, testset):
-    # clear session
-    tf.keras.backend.clear_session()
-    # Instantiate Model
-    model = VarTransformer_Model(col_index_dict,vocab_dict,num_layers,num_heads,d_model,forecast_horizon,max_inp_len,loss_type,dropout_rate=0.1)
-    
-    # Build Model (Initialize Weights)
-    for x,y,s,w in trainset.take(1):
-        model(x, training=False)
-        
-    return model
-
-def Load_Model(model_path):
-    model = tf.keras.models.load_model(model_path)
-    return model

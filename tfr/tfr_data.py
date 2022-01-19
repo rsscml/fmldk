@@ -452,6 +452,33 @@ class tfr_dataset:
         
         return [input_tensor, scale, id_arr, date_arr]
 
+    def baseline_infer_dataset(self, data, history_till, future_till, ignore_cols):
+        self.history_till = history_till
+        self.future_till = future_till
+
+        # check null
+        null_status, null_cols = self.check_null(data)
+        if null_status:
+            print("NaN column(s): ", null_cols)
+            raise ValueError("Column(s) with NaN detected!")
+
+        # sort & filter to recent context
+        data = self.sort_dataset(data)
+        data = data[data[self.time_index_col] <= self.future_till].groupby(self.id_col).apply(
+            lambda x: x[-self.window_len:]).reset_index(drop=True)
+
+        # zero out columns in ignore_cols for baseline forecast
+        for col in ignore_cols:
+            data[col] = np.where(data[self.time_index_col] > self.history_till, 0, data[col])
+
+        arr, pad_arr, id_arr, date_arr = self.select_all_arrs(data)
+        model_in, model_out, scale, _ = self.preprocess(arr, pad_arr)
+        input_tensor, output_tensor = tf.convert_to_tensor(model_in.astype(str), dtype=tf.string), tf.convert_to_tensor(
+            model_out.astype(float), dtype=tf.float32)
+
+        return [input_tensor, scale, id_arr, date_arr]
+
+
 
 
 

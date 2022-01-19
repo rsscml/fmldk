@@ -1,8 +1,10 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+# In[1]:
+
+
 import numpy as np
-import pandas as pd
 import math as m
 import tensorflow as tf
 import tensorflow_probability as tfp
@@ -10,6 +12,14 @@ tfd = tfp.distributions
 import shutil
 import absl.logging
 absl.logging.set_verbosity(absl.logging.ERROR)
+try:
+    import pyspark.pandas as pd
+except:
+    import pandas as pd
+
+
+# In[ ]:
+
 
 # Distribution Sampling functions
 
@@ -56,6 +66,10 @@ def poisson_sample(mu, n_samples=1):
 def GumbelSample(a, b, n_samples=1):
     dist = tfd.Gumbel(loc=a, scale=b)
     return tf.reduce_mean(tf.stop_gradient(dist.sample(sample_shape=n_samples)), axis=0)
+
+
+# In[ ]:
+
 
 # Model Class - Dense Transformer w/ Variable Selection
 
@@ -632,6 +646,8 @@ class all_variable_select_concat_layer(tf.keras.layers.Layer):
         return tfr_input, dynamic_weights   
 
 
+# In[ ]:
+
 
 # Variable Weighted Transformer Model
 
@@ -750,6 +766,10 @@ class VarTransformer(tf.keras.Model):
         else:
             return out, parameters, static_weights, encoder_weights, decoder_weights
 
+
+# In[ ]:
+
+
 # Transformer Base Model
 
 class Transformer(tf.keras.Model):
@@ -837,6 +857,10 @@ class Transformer(tf.keras.Model):
             return out, scale
         else:
             return out, parameters
+
+
+# In[ ]:
+
 
 # Transformer Wrapper
 
@@ -1272,6 +1296,9 @@ def Transformer_Infer(model, inputs, loss_type, hist_len, f_len, target_index):
     return forecast_df
 
 
+# In[ ]:
+
+
 class Simple_Transformer:
     def __init__(self, 
                  col_index_dict,
@@ -1351,7 +1378,27 @@ class Simple_Transformer:
         forecast = Transformer_Infer(self.model, inputs, self.loss_type, self.max_inp_len, self.forecast_horizon, self.target_index)
         
         return forecast
+    
+    def evaluate(self, forecasts, actuals, aggregate_on=[]):
         
+        results_df = actuals.merge(forecasts, on=['id','period'], how='inner')
+        
+        assert results_df.shape[0] == forecasts.shape[0], "forecasts & actuals dataframes dissimilar!"
+        
+        results_df['abs_error'] = np.abs(results_df['forecast'] - results_df['actual'])
+        results_df = results_df.groupby(['period']+aggregate_on).agg({'forecast':'sum', 'actual':'sum', 'abs_error':'sum'}).reset_index(drop=True)
+        
+        # FA & FB
+        results_df['Forecast_Accuracy'] = (1 - results_df['abs_error']/np.maximum(results_df['actual'], 1.0))*100
+        results_df['Forecast_Bias'] = (results_df['forecast']/np.maximum(results_df['actual'],1.0) - 1)*100
+        
+        return results_df
+        
+                
+
+
+# In[ ]:
+
 
 # VarTransformer Wrapper
 
@@ -1865,6 +1912,9 @@ def VarTransformer_Infer(model, inputs, loss_type, hist_len, f_len, target_index
     return forecast_df, stat_wts_df, encoder_wts_df, decoder_wts_df
 
 
+# In[ ]:
+
+
 class Feature_Weighted_Transformer:
     def __init__(self, 
                  col_index_dict,
@@ -1945,5 +1995,19 @@ class Feature_Weighted_Transformer:
         
         return forecast, [stat_wts_df, encoder_wts_df, decoder_wts_df]
         
-                
+    def evaluate(self, forecasts, actuals, aggregate_on=[]):
+        
+        results_df = actuals.merge(forecasts, on=['id','period'], how='inner')
+        
+        assert results_df.shape[0] == forecasts.shape[0], "forecasts & actuals dataframes dissimilar!"
+        
+        results_df['abs_error'] = np.abs(results_df['forecast'] - results_df['actual'])
+        results_df = results_df.groupby(['period']+aggregate_on).agg({'forecast':'sum', 'actual':'sum', 'abs_error':'sum'}).reset_index()
+        
+        # FA & FB
+        results_df['Forecast_Accuracy'] = (1 - results_df['abs_error']/np.maximum(results_df['actual'], 1.0))*100
+        results_df['Forecast_Bias'] = (results_df['forecast']/np.maximum(results_df['actual'],1.0) - 1)*100
+        
+        return results_df
+    
 

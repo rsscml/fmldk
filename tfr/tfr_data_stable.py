@@ -1,18 +1,10 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
-
-
 import tensorflow as tf
 import tensorflow_probability as tfp
 tfd = tfp.distributions
-
-try:
-    import pyspark.pandas as pd
-except:
-    import pandas as pd
-    
+import pandas as pd
 import numpy as np
 from joblib import Parallel, delayed
 import itertools
@@ -27,11 +19,7 @@ import math as m
 import time
 
 
-# In[3]:
-
-
-
-class dl_dataset:
+class tfr_dataset:
     def __init__(self, col_dict, window_len, fh, batch, min_nz, PARALLEL_DATA_JOBS, PARALLEL_DATA_JOBS_BATCHSIZE):
         """
         col_dict: dictionary of various column groups {id_col:'',
@@ -166,12 +154,10 @@ class dl_dataset:
     def df_sampler(self, gdf):
         """
         Helper function for select_arrs
-        
+
         gdf = gdf.reset_index(drop=True)
         first_nonzero_index = gdf[self.target_col].ne(0).idxmax()
         gdf = gdf.iloc[first_nonzero_index:,:]
-        gdf = gdf.reset_index(drop=True)
-        
         """
         gdf = gdf.reset_index(drop=True)
         delta = len(gdf) - self.window_len
@@ -189,30 +175,32 @@ class dl_dataset:
             rand_start = random.randrange(delta)
             arr = gdf.loc[rand_start:rand_start + self.window_len - 1, self.col_list].reset_index(drop=True).values
         return (arr, pad_len)
-    
+
     def df_infer_sampler(self, gdf):
         """
         Helper function for select_all_arrs
         """
         gdf = gdf.reset_index(drop=True)
         delta = len(gdf) - self.window_len
-        if delta<0:
-            arr = gdf.loc[:,self.col_list].reset_index(drop=True).values
+        if delta < 0:
+            arr = gdf.loc[:, self.col_list].reset_index(drop=True).values
             pad_len = np.abs(delta)
-            arr = np.pad(arr,pad_width=((pad_len,0),(0,0)), mode='constant', constant_values=0)
-            date_arr = gdf.loc[:,self.time_index_col].reset_index(drop=True).values
-            date_arr = np.pad(date_arr,pad_width=((pad_len,0)), mode='constant', constant_values=0)
+            arr = np.pad(arr, pad_width=((pad_len, 0), (0, 0)), mode='constant', constant_values=0)
+            date_arr = gdf.loc[:, self.time_index_col].reset_index(drop=True).values
+            date_arr = np.pad(date_arr, pad_width=((pad_len, 0)), mode='constant', constant_values=0)
             date_arr = date_arr[-self.fh:]
-        elif delta==0:
+        elif delta == 0:
             pad_len = 0
             rand_start = 0
             arr = gdf.loc[rand_start:rand_start + self.window_len - 1, self.col_list].reset_index(drop=True).values
-            date_arr = gdf.loc[rand_start:rand_start + self.window_len - 1, self.time_index_col].reset_index(drop=True).tail(self.fh).values
+            date_arr = gdf.loc[rand_start:rand_start + self.window_len - 1, self.time_index_col].reset_index(
+                drop=True).tail(self.fh).values
         else:
             pad_len = 0
             rand_start = random.randrange(delta)
             arr = gdf.loc[rand_start:rand_start + self.window_len - 1, self.col_list].reset_index(drop=True).values
-            date_arr = gdf.loc[rand_start:rand_start + self.window_len - 1, self.time_index_col].reset_index(drop=True).tail(self.fh).values
+            date_arr = gdf.loc[rand_start:rand_start + self.window_len - 1, self.time_index_col].reset_index(
+                drop=True).tail(self.fh).values
         return (arr, pad_len, date_arr)
     
     def select_all_arrs(self, data):
@@ -220,30 +208,15 @@ class dl_dataset:
         Use for inference dataset
         """
         groups = data.groupby([self.id_col])
-        sampled_arr = Parallel(n_jobs=self.PARALLEL_DATA_JOBS, batch_size=self.PARALLEL_DATA_JOBS_BATCHSIZE)(delayed(self.df_infer_sampler)(gdf) for _,gdf in groups)
+        sampled_arr = Parallel(n_jobs=self.PARALLEL_DATA_JOBS, batch_size=self.PARALLEL_DATA_JOBS_BATCHSIZE)(
+            delayed(self.df_infer_sampler)(gdf) for _, gdf in groups)
         arr_list = [tup[0] for tup in sampled_arr]
         pad_list = [tup[1] for tup in sampled_arr]
         date_list = [tup[2] for tup in sampled_arr]
         arr = np.stack(arr_list, axis=0)
         pad_arr = np.stack(pad_list, axis=0)
         date_arr = np.stack(date_list, axis=0)
-        id_arr = arr[:,-1:,0]
-        
-        """
-        arr_list = []
-        pad_list = []
-        date_list = []
-        for gname, gdf in data.groupby([self.id_col]):
-            arr, pad_len = self.df_sampler(gdf)
-            date_arr = gdf[self.time_index_col].tail(self.fh).values
-            arr_list.append(arr)
-            pad_list.append(pad_len)
-            date_list.append(date_arr)
-        arr = np.stack(arr_list, axis=0)
-        pad_arr = np.stack(pad_list, axis=0)
-        date_arr = np.stack(date_list, axis=0)
-        id_arr = arr[:,-1:,0]
-        """
+        id_arr = arr[:, -1:, 0]
         return arr, pad_arr, id_arr, date_arr
     
     def sort_dataset(self, data):
@@ -475,68 +448,37 @@ class dl_dataset:
         data = data[data[self.time_index_col]<=self.future_till].groupby(self.id_col).apply(lambda x: x[-self.window_len:]).reset_index(drop=True)
         arr, pad_arr, id_arr, date_arr = self.select_all_arrs(data)
         model_in, model_out, scale, _ = self.preprocess(arr, pad_arr)
-        input_tensor = tf.convert_to_tensor(model_in.astype(str), dtype=tf.string)
-        # for evaluation
-        actuals_arr = model_out*scale
+        input_tensor, output_tensor = tf.convert_to_tensor(model_in.astype(str), dtype=tf.string), tf.convert_to_tensor(model_out.astype(float), dtype=tf.float32)
         
-        if len(self.static_cat_col_list)>0:
-            stat_arr_list = []
-            for col, i in zip(self.static_cat_col_list, self.static_cat_indices):
-                stat_arr = model_in[:,-1:,i].astype(str)
-                stat_arr_list.append(stat_arr)    
-            stat_arr = np.concatenate(stat_arr_list, axis=1)        
-            actuals_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1), stat_arr, actuals_arr.reshape(-1,self.fh)), axis=1))
-            actuals_columns = ['id'] + self.static_cat_col_list + ['actual_{}'.format(i) for i in range(self.fh)]
-            id_columns = ['id'] + self.static_cat_col_list
-            actuals_df.columns = actuals_columns
-            actuals_df = actuals_df.melt(id_vars=id_columns, value_name='actual').sort_values(id_columns).drop(columns=['variable'])
-            actuals_df = actuals_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
-            # merge with forecast period dates
-            date_df = pd.DataFrame(date_arr.reshape(-1,)).rename(columns={0:'period'})
-            actuals_df = pd.concat([actuals_df, date_df], axis=1)
-            actuals_df['actual'] = actuals_df['actual'].astype(np.float32)
-        else:
-            actuals_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1), actuals_arr.reshape(-1,self.fh)), axis=1))
-            actuals_columns = ['id'] + ['actual_{}'.format(i) for i in range(self.fh)]
-            id_columns = ['id']
-            actuals_df.columns = actuals_columns
-            actuals_df = actuals_df.melt(id_vars=id_columns, value_name='actual').sort_values(id_columns).drop(columns=['variable'])
-            actuals_df = actuals_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
-            # merge with forecast period dates
-            date_df = pd.DataFrame(date_arr.reshape(-1,)).rename(columns={0:'period'})
-            actuals_df = pd.concat([actuals_df, date_df], axis=1)
-            actuals_df['actual'] = actuals_df['actual'].astype(np.float32)
-         
-        return [input_tensor, scale, id_arr, date_arr], actuals_df
-    
+        return [input_tensor, scale, id_arr, date_arr]
+
     def baseline_infer_dataset(self, data, history_till, future_till, ignore_cols):
         self.history_till = history_till
         self.future_till = future_till
-        
+
         # check null
         null_status, null_cols = self.check_null(data)
         if null_status:
             print("NaN column(s): ", null_cols)
             raise ValueError("Column(s) with NaN detected!")
-            
+
         # sort & filter to recent context
         data = self.sort_dataset(data)
-        data = data[data[self.time_index_col]<=self.future_till].groupby(self.id_col).apply(lambda x: x[-self.window_len:]).reset_index(drop=True)
-        
+        data = data[data[self.time_index_col] <= self.future_till].groupby(self.id_col).apply(
+            lambda x: x[-self.window_len:]).reset_index(drop=True)
+
         # zero out columns in ignore_cols for baseline forecast
         for col in ignore_cols:
-            data[col] = np.where(data[self.time_index_col]>self.history_till, 0, data[col])
-        
+            data[col] = np.where(data[self.time_index_col] > self.history_till, 0, data[col])
+
         arr, pad_arr, id_arr, date_arr = self.select_all_arrs(data)
         model_in, model_out, scale, _ = self.preprocess(arr, pad_arr)
-        input_tensor = tf.convert_to_tensor(model_in.astype(str), dtype=tf.string)
-        
+        input_tensor, output_tensor = tf.convert_to_tensor(model_in.astype(str), dtype=tf.string), tf.convert_to_tensor(
+            model_out.astype(float), dtype=tf.float32)
+
         return [input_tensor, scale, id_arr, date_arr]
 
-    
 
-
-# In[ ]:
 
 
 

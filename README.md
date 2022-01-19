@@ -90,9 +90,12 @@ vocab = data_obj.vocab_list(df)
 ````
 ##### Create Inference dataset for final predctions. This can be done separately from above.
 ````
-infer_dataset = data_obj.infer_dataset(df,   
-                                       history_till=pd.to_datetime('2015-12-31', format='%Y-%M-%d'),   
-                                       future_till=pd.to_datetime('2016-01-31', format='%Y-%M-%d'))  
+infer_dataset, actuals_df = data_obj.infer_dataset(df,   
+                                                   history_till=pd.to_datetime('2015-12-31', format='%Y-%M-%d'),   
+                                                   future_till=pd.to_datetime('2016-01-31', format='%Y-%M-%d'))  
+
+where, actuals_df is a dataframe of ground_truths (to be used for evaluation)
+
 ````
 ##### Build Model
 ````
@@ -201,6 +204,30 @@ where,
     feature_imp - a list of variable importance dataframes in the following order: static_vars_imp_df, historical_vars_imp_df, future_vars_imp_df 
 
 ````
+##### Baseline Forecasts
+````
+Prepare the baseline dataset:
 
+baseline_infer_dataset = data_obj.baseline_infer_dataset(df, 
+                                                         history_till=pd.to_datetime('2016-01-18', format='%Y-%M-%d'), 
+                                                         future_till=pd.to_datetime('2016-01-31', format='%Y-%M-%d'),
+                                                         ignore_cols=['event_name_1','event_type_1'])
 
+where, ignore_cols is a list of features to zero out while forecasting so as to eliminate their contribution to total forecast.
+
+Call infer as usual:
+
+baseline_forecast_df, _ = model.infer(baseline_infer_dataset)
+
+````
+
+##### Evaluate Forecasts
+````
+Evaluation produces two metrics: Forecast_Accuracy & Forecast_Bias expressed as percentages
+
+eval_df = model.evaluate(forecasts=forecast_df, actuals=actuals_df, aggregate_on=['item_id','state_id'])
+
+where, aggregate_on is a list of static categorical columns which provides the level at which to summarize forecast accuracy & bias.
+  
+````
 

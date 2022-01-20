@@ -4,12 +4,7 @@
 import tensorflow as tf
 import tensorflow_probability as tfp
 tfd = tfp.distributions
-
-try:
-    import pyspark.pandas as pd
-except:
-    import pandas as pd
-    
+import pandas as pd
 import numpy as np
 from joblib import Parallel, delayed
 import itertools

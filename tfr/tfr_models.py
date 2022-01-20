@@ -12,10 +12,7 @@ tfd = tfp.distributions
 import shutil
 import absl.logging
 absl.logging.set_verbosity(absl.logging.ERROR)
-try:
-    import pyspark.pandas as pd
-except:
-    import pandas as pd
+import pandas as pd
 
 
 # In[ ]:

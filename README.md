@@ -230,4 +230,44 @@ eval_df = model.evaluate(forecasts=forecast_df, actuals=actuals_df, aggregate_on
 where, aggregate_on is a list of static categorical columns which provides the level at which to summarize forecast accuracy & bias.
   
 ````
+### New in v0.1.10 - Sparse Attention Transformers
+````
+Build Model: 
 
+model = Sparse_Simple_Transformer(col_index_dict = col_index_dict,
+                                  vocab_dict = vocab,
+                                  num_layers = 2,
+                                  num_heads = 4,
+                                  num_blocks = 2,
+                                  kernel_size = 5,  
+                                  d_model = 64,
+                                  forecast_horizon = 13,
+                                  max_inp_len = 14,
+                                  loss_type = 'Point',
+                                  dropout_rate=0.1)
+
+or 
+
+model = Sparse_Feature_Weighted_Transformer(col_index_dict = col_index_dict,
+                                            vocab_dict = vocab,
+                                            num_layers = 2,
+                                            num_heads = 4,
+                                            num_blocks = 2,
+                                            kernel_size = 5,
+                                            d_model = 64,
+                                            forecast_horizon = 13,
+                                            max_inp_len = 14,
+                                            loss_type = 'Point',
+                                            dropout_rate=0.1)
+
+model.build()
+
+Where,
+    num_blocks - local attention window size. max_inp_len should be a multiple of num_blocks. 
+                 Specify num_blocks > 1 only if working with long sequences. 
+    kernel_size - Conv1D causal convolution layer's kernel size. Basically, the look_back_window at each timestep.
+                  Typical values: [3,5,7,9]
+
+Train: Same as Feature_Weighted_Transformer
+
+````

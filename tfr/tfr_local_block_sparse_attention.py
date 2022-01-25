@@ -13,6 +13,7 @@ import shutil
 import absl.logging
 absl.logging.set_verbosity(absl.logging.ERROR)
 import pandas as pd
+import pickle
 
 
 # In[ ]:
@@ -671,6 +672,15 @@ class SparseVarTransformer_Model(tf.keras.Model):
         self.f_len = int(forecast_horizon)
         self.loss_type = loss_type
         self.col_index_dict = col_index_dict
+        self.vocab_dict = vocab_dict
+        self.num_layers = num_layers
+        self.num_heads = num_heads
+        self.num_blocks = num_blocks
+        self.kernel_size = kernel_size
+        self.d_model = d_model
+        self.forecast_horizon = forecast_horizon
+        self.max_inp_len = max_inp_len
+        self.dropout_rate = dropout_rate
         self.decoder_lags = max(int(self.hist_len/4), 2)
         
         if (len(self.col_index_dict.get('static_num_indices')[0])==0) and (len(self.col_index_dict.get('static_cat_indices')[0])==0):
@@ -1007,6 +1017,32 @@ def SparseVarTransformer_Train(model,
     test_metric_results = []
         
     # initialize model tracking vars
+    columns_dict_file = model_prefix + '_col_index_dict.pkl'
+    with open(columns_dict_file, 'wb') as f:
+        pickle.dump(model.col_index_dict, f)
+
+    vocab_dict_file = model_prefix + '_vocab_dict.pkl'
+    with open(vocab_dict_file, 'wb') as f:
+        pickle.dump(model.vocab_dict, f)
+    
+    model_tracker_file = open(model_prefix + '_tracker.txt', mode='w', encoding='utf-8')
+
+    model_tracker_file.write('Sparse Feature Weighted Transformer Training started with following Model Parameters ... \n')
+    model_tracker_file.write('----------------------------------------\n')
+    model_tracker_file.write('num_layers ' + str(model.num_layers) + '\n')
+    model_tracker_file.write('num_heads ' + str(model.num_heads) + '\n')
+    model_tracker_file.write('d_model ' + str(model.d_model) + '\n')
+    model_tracker_file.write('num_blocks ' + str(model.num_blocks) + '\n')
+    model_tracker_file.write('kernel_size ' + str(model.kernel_size) + '\n')
+    model_tracker_file.write('forecast_horizon ' + str(model.forecast_horizon) + '\n')
+    model_tracker_file.write('max_inp_len ' + str(model.max_inp_len) + '\n')
+    model_tracker_file.write('dropout_rate ' + str(model.dropout_rate) + '\n')
+    model_tracker_file.write('col_index_dict path ' + str(columns_dict_file) + '\n')
+    model_tracker_file.write('vocab_dict path ' + str(vocab_dict_file) + '\n')
+    model_tracker_file.write('----------------------------------------\n')
+    model_tracker_file.write('\n')
+    model_tracker_file.flush()
+    
     model_list = []
     best_model = None
     time_since_improvement = 0
@@ -1064,17 +1100,20 @@ def SparseVarTransformer_Train(model,
         
         # Save Model
         model_path = model_prefix + '_' + str(epoch) 
-        tf.keras.models.save_model(model, model_path)
         model_list.append(model_path)
             
         # track best model
         if test_loss_results[epoch]==np.min(test_loss_results):
             best_model = model_path
+            tf.keras.models.save_model(model, model_path)
             # reset time_since_improvement
             time_since_improvement = 0
         else:
             time_since_improvement += 1
-            
+        
+        model_tracker_file.write('best_model path after epochs ' + str(epoch) + ': ' + best_model + '\n')
+        print("Best Model: ", best_model)
+        
         # remove older models
         if len(model_list)>patience:
             for m in model_list[:-patience]:
@@ -1083,11 +1122,14 @@ def SparseVarTransformer_Train(model,
                         shutil.rmtree(m)
                     except:
                         pass
-                
-        print("Best Model: ", best_model)
+       
         if (time_since_improvement > patience) and (epoch > min_epochs):
             print("Terminating Training. Best Model path: {}".format(best_model))
+            model_tracker_file.close()
             break
+            
+        # flush each epoch    
+        model_tracker_file.flush()
     
     return best_model
         
@@ -1408,6 +1450,15 @@ class SparseTransformer_Model(tf.keras.Model):
         self.f_len = int(forecast_horizon)
         self.loss_type = loss_type
         self.col_index_dict = col_index_dict
+        self.vocab_dict = vocab_dict
+        self.num_layers = num_layers
+        self.num_heads = num_heads
+        self.num_blocks = num_blocks
+        self.kernel_size = kernel_size
+        self.d_model = d_model
+        self.forecast_horizon = forecast_horizon
+        self.max_inp_len = max_inp_len
+        self.dropout_rate = dropout_rate
         self.decoder_lags = max(int(self.hist_len/4), 2)
         
         self.model = SparseTransformer(num_layers=num_layers,
@@ -1684,6 +1735,32 @@ def SparseTransformer_Train(model,
     test_metric_results = []
         
     # initialize model tracking vars
+    columns_dict_file = model_prefix + '_col_index_dict.pkl'
+    with open(columns_dict_file, 'wb') as f:
+        pickle.dump(model.col_index_dict, f)
+
+    vocab_dict_file = model_prefix + '_vocab_dict.pkl'
+    with open(vocab_dict_file, 'wb') as f:
+        pickle.dump(model.vocab_dict, f)
+    
+    model_tracker_file = open(model_prefix + '_tracker.txt', mode='w', encoding='utf-8')
+
+    model_tracker_file.write('Sparse Simple Transformer Training started with following Model Parameters ... \n')
+    model_tracker_file.write('----------------------------------------\n')
+    model_tracker_file.write('num_layers ' + str(model.num_layers) + '\n')
+    model_tracker_file.write('num_heads ' + str(model.num_heads) + '\n')
+    model_tracker_file.write('d_model ' + str(model.d_model) + '\n')
+    model_tracker_file.write('num_blocks ' + str(model.num_blocks) + '\n')
+    model_tracker_file.write('kernel_size ' + str(model.kernel_size) + '\n')
+    model_tracker_file.write('forecast_horizon ' + str(model.forecast_horizon) + '\n')
+    model_tracker_file.write('max_inp_len ' + str(model.max_inp_len) + '\n')
+    model_tracker_file.write('dropout_rate ' + str(model.dropout_rate) + '\n')
+    model_tracker_file.write('col_index_dict path ' + str(columns_dict_file) + '\n')
+    model_tracker_file.write('vocab_dict path ' + str(vocab_dict_file) + '\n')
+    model_tracker_file.write('----------------------------------------\n')
+    model_tracker_file.write('\n')
+    model_tracker_file.flush()
+    
     model_list = []
     best_model = None
     time_since_improvement = 0
@@ -1741,17 +1818,20 @@ def SparseTransformer_Train(model,
         
         # Save Model
         model_path = model_prefix + '_' + str(epoch) 
-        tf.keras.models.save_model(model, model_path)
         model_list.append(model_path)
             
         # track best model
         if test_loss_results[epoch]==np.min(test_loss_results):
             best_model = model_path
+            tf.keras.models.save_model(model, model_path)
             # reset time_since_improvement
             time_since_improvement = 0
         else:
             time_since_improvement += 1
-            
+        
+        model_tracker_file.write('best_model path after epochs ' + str(epoch) + ': ' + best_model + '\n')
+        print("Best Model: ", best_model)
+        
         # remove older models
         if len(model_list)>patience:
             for m in model_list[:-patience]:
@@ -1761,11 +1841,12 @@ def SparseTransformer_Train(model,
                     except:
                         pass
                 
-        print("Best Model: ", best_model)
         if (time_since_improvement > patience) and (epoch > min_epochs):
             print("Terminating Training. Best Model path: {}".format(best_model))
+            model_tracker_file.close()
             break
-    
+        # flush after each epoch    
+        model_tracker_file.flush()
     return best_model
     
     

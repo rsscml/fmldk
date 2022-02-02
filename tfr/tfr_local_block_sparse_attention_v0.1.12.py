@@ -16,11 +16,7 @@ import pandas as pd
 import pickle
 
 
-# In[ ]:
-
-
 # Distribution Sampling functions
-
 # negbin
 def negbin_sample(mu, alpha, n_samples=1):
     tol = 1e-5
@@ -65,8 +61,6 @@ def GumbelSample(a, b, n_samples=1):
     dist = tfd.Gumbel(loc=a, scale=b)
     return tf.reduce_mean(tf.stop_gradient(dist.sample(sample_shape=n_samples)), axis=0)
 
-
-# In[ ]:
 
 
 # masks
@@ -185,11 +179,6 @@ class LocalSparseMultiHeadAttention(tf.keras.layers.Layer):
         output = self.dense(concat_attention, training=training)  # (batch_size, seq_len_q, d_model)
         
         return output, attention_weights
-      
-
-
-# In[ ]:
-
 
 # Encoder & Decoder Layers
 
@@ -300,10 +289,6 @@ class Decoder(tf.keras.layers.Layer):
         attention_weights['decoder_layer{}_block2'.format(i+1)] = block2
         # x.shape == (batch_size, target_seq_len, d_model)
         return x, attention_weights
-
-
-# In[ ]:
-
 
 # variable selection networks
 
@@ -519,11 +504,6 @@ class temporal_variable_selection_layer(tf.keras.layers.Layer):
         tfr_input = tf.reduce_sum(combined, axis=2) #[batch,time_steps,hidden_layers_size]
         
         return tfr_input, dynamic_weights
-      
-
-
-# In[ ]:
-
 
 # Variable Weighted Transformer Model
 
@@ -645,9 +625,6 @@ class SparseVarTransformer(tf.keras.Model):
             return out, scale, static_weights, encoder_weights, decoder_weights
         else:
             return out, parameters, static_weights, encoder_weights, decoder_weights
-
-
-# In[ ]:
 
 
 # SparseVarTransformer Wrapper
@@ -1208,109 +1185,6 @@ def SparseVarTransformer_Infer(model, inputs, loss_type, hist_len, f_len, target
         
     return forecast_df, stat_wts_df, encoder_wts_df, decoder_wts_df
 
-
-def SparseVarTransformer_Infer_Piecewise(model, inputs, loss_type, hist_len, f_len, target_index, chunksize):
-    infer_tensor, scale, id_arr, date_arr = inputs
-    scale = scale[:,-1:,-1]
-    window_len = hist_len + f_len
-    output = []
-    
-    total_size = tf.shape(infer_tensor)[0]
-    num_chunks = int((total_size//chunksize) + (1 if (total_size%chunksize)!=0 else 0))
-    forecast_df_list = []
-    stat_wts_df_list = [] 
-    encoder_wts_df_list = [] 
-    decoder_wts_df_list = []
-    
-    for chunk_no in range(num_chunks):
-        print("Forecasting Chunk: ", chunk_no+1)
-        infer_tensor_chunk = infer_tensor[chunk_no*chunksize:(chunk_no+1)*chunksize]
-        id_arr_chunk = id_arr[chunk_no*chunksize:(chunk_no+1)*chunksize]
-        date_arr_chunk = date_arr[chunk_no*chunksize:(chunk_no+1)*chunksize]
-        scale_chunk = scale[chunk_no*chunksize:(chunk_no+1)*chunksize]
-        encoder_wts_df = None
-        decoder_wts_df = None
-        stat_wts_df = None
-        output = []
-        for i in range(f_len):
-            out, dist, feature_wts = model(infer_tensor_chunk, training=False)
-            
-            # update target
-            if loss_type in ['Normal','Poisson','Negbin']:
-                dist = dist.numpy()
-                output.append(dist[:,i:i+1,0])
-                infer_arr = infer_tensor_chunk.numpy()
-                infer_arr[:,hist_len:hist_len+i+1,target_index] = out[:,0:i+1,0]/scale_chunk
-            elif loss_type in ['Point','Quantile']:
-                out = out.numpy()
-                output.append(out[:,i:i+1,0])
-                infer_arr = infer_tensor_chunk.numpy()
-                infer_arr[:,hist_len:hist_len+i+1,target_index] = out[:,0:i+1,0]
-            
-            # feedback updated hist + fh tensor
-            infer_tensor_chunk = tf.convert_to_tensor(infer_arr.astype(str), dtype=tf.string)
-            
-            if i == (f_len - 1):
-                column_names_list, wts_list = feature_wts
-                stat_columns, encoder_columns, decoder_columns = column_names_list
-                stat_columns_string = []
-                encoder_columns_string = []
-                decoder_columns_string = []
-                for col in stat_columns:
-                    stat_columns_string.append(col.numpy().decode("utf-8")) 
-                for col in encoder_columns:
-                    encoder_columns_string.append(col.numpy().decode("utf-8"))
-                for col in decoder_columns:
-                    decoder_columns_string.append(col.numpy().decode("utf-8"))
-                
-                stat_wts, encoder_wts, decoder_wts = wts_list
-                # Average feature weights across time dim
-                encoder_wts = encoder_wts.numpy()
-                decoder_wts = decoder_wts.numpy()
-                # convert wts to df    
-                encoder_wts_df = pd.DataFrame(encoder_wts, columns=encoder_columns_string)   
-                decoder_wts_df = pd.DataFrame(decoder_wts, columns=decoder_columns_string)    
-                if stat_wts is not None:
-                    stat_wts = stat_wts.numpy()
-                    stat_wts_df = pd.DataFrame(stat_wts, columns=stat_columns_string)   
-            
-        output_arr = np.concatenate(output, axis=1) 
-        
-        # rescale if necessary
-        if loss_type in ['Normal','Poisson','Negbin']:
-            output_df = pd.DataFrame(np.concatenate((id_arr_chunk.reshape(-1,1),output_arr), axis=1))
-        elif loss_type in ['Point','Quantile']:
-            output_df = pd.DataFrame(np.concatenate((id_arr_chunk.reshape(-1,1),output_arr*scale_chunk.reshape(-1,1)), axis=1))
-        output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0:'id','value':'forecast'})
-        output_df = output_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
-        
-        # merge date_columns
-        date_df = pd.DataFrame(date_arr_chunk.reshape(-1,)).rename(columns={0:'period'})
-        forecast_df = pd.concat([date_df, output_df], axis=1)
-        forecast_df['forecast'] = forecast_df['forecast'].astype(np.float32)
-        
-        # weights df merge with id
-        stat_wts_df = pd.concat([pd.DataFrame(id_arr_chunk.reshape(-1,1)), stat_wts_df], axis=1)
-        encoder_wts_df = pd.concat([pd.DataFrame(id_arr_chunk.reshape(-1,1)), encoder_wts_df], axis=1)
-        decoder_wts_df = pd.concat([pd.DataFrame(id_arr_chunk.reshape(-1,1)), decoder_wts_df], axis=1)
-        
-        forecast_df_list.append(forecast_df)
-        stat_wts_df_list.append(stat_wts_df)
-        encoder_wts_df_list.append(encoder_wts_df)
-        decoder_wts_df_list.append(encoder_wts_df)
-        
-    forecast_df = pd.concat(forecast_df_list, axis=0)
-    stat_wts_df = pd.concat(stat_wts_df_list, axis=0)
-    encoder_wts_df = pd.concat(encoder_wts_df_list, axis=0)
-    decoder_wts_df = pd.concat(decoder_wts_df_list, axis=0)
-    
-    print(stat_wts_df.shape, encoder_wts_df.shape, decoder_wts_df.shape)    
-    return forecast_df, stat_wts_df, encoder_wts_df, decoder_wts_df
-
-
-# In[ ]:
-
-
 class Sparse_Feature_Weighted_Transformer:
     def __init__(self, 
                  col_index_dict,
@@ -1396,11 +1270,6 @@ class Sparse_Feature_Weighted_Transformer:
         forecast, stat_wts_df, encoder_wts_df, decoder_wts_df = SparseVarTransformer_Infer(self.model, inputs, self.loss_type, self.max_inp_len, self.forecast_horizon, self.target_index)
         
         return forecast, [stat_wts_df, encoder_wts_df, decoder_wts_df]
-    
-    def infer_piecewise(self, inputs, chunksize):
-        forecast, stat_wts_df, encoder_wts_df, decoder_wts_df = SparseVarTransformer_Infer_Piecewise(self.model, inputs, self.loss_type, self.max_inp_len, self.forecast_horizon, self.target_index, chunksize)
-        
-        return forecast, [stat_wts_df, encoder_wts_df, decoder_wts_df]
         
     def evaluate(self, forecasts, actuals, aggregate_on=[]):
         
@@ -1416,11 +1285,6 @@ class Sparse_Feature_Weighted_Transformer:
         results_df['Forecast_Bias'] = (results_df['forecast']/np.maximum(results_df['actual'],1.0) - 1)*100
         
         return results_df
-    
-
-
-# In[ ]:
-
 
 # Transformer Base Model
 
@@ -1513,10 +1377,6 @@ class SparseTransformer(tf.keras.Model):
             return out, scale
         else:
             return out, parameters
-
-
-# In[ ]:
-
 
 # SparseTransformer Wrapper
 
@@ -1997,64 +1857,6 @@ def SparseTransformer_Infer(model, inputs, loss_type, hist_len, f_len, target_in
     return forecast_df
 
 
-def SparseTransformer_Infer_Piecewise(model, inputs, loss_type, hist_len, f_len, target_index, chunksize):
-    infer_tensor, scale, id_arr, date_arr = inputs
-    scale = scale[:,-1:,-1]
-    window_len = int(hist_len + f_len)
-    total_size = tf.shape(infer_tensor)[0]
-    num_chunks = int((total_size//chunksize) + (1 if (total_size%chunksize)!=0 else 0))
-    forecast_df_list = []
-    
-    for chunk_no in range(num_chunks):
-        print("Forecasting Chunk: ", chunk_no+1)
-        infer_tensor_chunk = infer_tensor[chunk_no*chunksize:(chunk_no+1)*chunksize]
-        id_arr_chunk = id_arr[chunk_no*chunksize:(chunk_no+1)*chunksize]
-        date_arr_chunk = date_arr[chunk_no*chunksize:(chunk_no+1)*chunksize]
-        scale_chunk = scale[chunk_no*chunksize:(chunk_no+1)*chunksize]
-        output = []
-        for i in range(f_len):
-            out, dist = model(infer_tensor_chunk, training=False)
-            
-            # update target
-            if loss_type in ['Normal','Poisson','Negbin']:
-                dist = dist.numpy()
-                output.append(dist[:,i:i+1,0])
-                infer_arr = infer_tensor_chunk.numpy()
-                infer_arr[:,hist_len:hist_len+i+1,target_index] = out[:,0:i+1,0]/scale_chunk
-            elif loss_type in ['Point','Quantile']:
-                out = out.numpy()
-                output.append(out[:,i:i+1,0])
-                print("iter: {}, output 1st: {}".format(i, out[0]))
-                infer_arr = infer_tensor_chunk.numpy()
-                infer_arr[:,hist_len:hist_len+i+1,target_index] = out[:,0:i+1,0]
-            
-            # feedback updated hist + fh tensor
-            infer_tensor_chunk = tf.convert_to_tensor(infer_arr.astype(str), dtype=tf.string)
-            
-        output_arr = np.concatenate(output, axis=1) 
-        
-        # rescale if necessary
-        if loss_type in ['Normal','Poisson','Negbin']:
-            output_df = pd.DataFrame(np.concatenate((id_arr_chunk.reshape(-1,1),output_arr), axis=1))
-        elif loss_type in ['Point','Quantile']:
-            output_df = pd.DataFrame(np.concatenate((id_arr_chunk.reshape(-1,1),output_arr*scale_chunk.reshape(-1,1)), axis=1))
-        output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0:'id','value':'forecast'})
-        output_df = output_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
-        
-        # merge date_columns
-        date_df = pd.DataFrame(date_arr_chunk.reshape(-1,)).rename(columns={0:'period'})
-        forecast_df = pd.concat([date_df, output_df], axis=1)
-        forecast_df['forecast'] = forecast_df['forecast'].astype(np.float32)
-        forecast_df_list.append(forecast_df)
-    
-    forecast_df = pd.concat(forecast_df_list, axis=0)    
-        
-    return forecast_df
-
-
-# In[ ]:
-
-
 class Sparse_Simple_Transformer:
     def __init__(self, 
                  col_index_dict,
@@ -2141,11 +1943,6 @@ class Sparse_Simple_Transformer:
         
         return forecast
     
-    def infer_piecewise(self, inputs, chunksize):
-        forecast = SparseTransformer_Infer_Piecewise(self.model, inputs, self.loss_type, self.max_inp_len, self.forecast_horizon, self.target_index, chunksize)
-        
-        return forecast
-    
     def evaluate(self, forecasts, actuals, aggregate_on=[]):
         
         results_df = actuals.merge(forecasts, on=['id','period'], how='inner')
@@ -2161,5 +1958,3 @@ class Sparse_Simple_Transformer:
         
         return results_df
         
-                
-

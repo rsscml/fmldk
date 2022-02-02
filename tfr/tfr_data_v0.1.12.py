@@ -1,9 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
-
-
 import tensorflow as tf
 import tensorflow_probability as tfp
 tfd = tfp.distributions
@@ -22,7 +19,7 @@ import math as m
 import time
 
 class tfr_dataset:
-    def __init__(self, col_dict, window_len, fh, batch, min_nz, interleave=1, PARALLEL_DATA_JOBS=1, PARALLEL_DATA_JOBS_BATCHSIZE=64):
+    def __init__(self, col_dict, window_len, fh, batch, min_nz, PARALLEL_DATA_JOBS, PARALLEL_DATA_JOBS_BATCHSIZE):
         """
         col_dict: dictionary of various column groups {id_col:'',
                                                        target_col:'',
@@ -47,10 +44,9 @@ class tfr_dataset:
         self.fh = fh
         self.batch = batch
         self.min_nz = min_nz
-        self.interleave = interleave
         self.PARALLEL_DATA_JOBS = PARALLEL_DATA_JOBS
         self.PARALLEL_DATA_JOBS_BATCHSIZE = PARALLEL_DATA_JOBS_BATCHSIZE
-       
+        
         # extract columnsets from col_dict
         self.id_col = self.col_dict.get('id_col', None)
         self.target_col = self.col_dict.get('target_col', None)
@@ -153,118 +149,7 @@ class tfr_dataset:
         arr = np.stack(arr_list, axis=0)
         pad_arr = np.stack(pad_list, axis=0)
         return arr, pad_arr
-    
-    def static_arrs(self, df):
-        """
-        Use for creating static train/test datasets i.e. non-generator based training
-        """
-        groups = df.groupby([self.id_col])
-        sliding_arrs = Parallel(n_jobs=self.PARALLEL_DATA_JOBS, batch_size=self.PARALLEL_DATA_JOBS_BATCHSIZE)(delayed(self.extract_windows)(gdf.values) for _, gdf in groups)
-        
-        '''
-        model_in_list = [tup[0] for tup in sliding_arrs]
-        model_out_list = [tup[1] for tup in sliding_arrs]
-        scale_list = [tup[2] for tup in sliding_arrs]
-        weights_list = [tup[3] for tup in sliding_arrs]
-        
-        model_in = np.concatenate(model_in_list, axis=0)
-        model_out = np.concatenate(model_out_list, axis=0) 
-        scale = np.concatenate(scale_list, axis=0) 
-        weights = np.concatenate(weights_list, axis=0) 
-        
-        del model_in_list, model_out_list, scale_list, weights_list
-        gc.collect()
-        
-        '''
-        arr = np.vstack([np.memmap(tup[0], dtype='<U32', mode='r', shape=tup[1])  for tup in sliding_arrs])
-        pad_arr = np.vstack([tup[2] for tup in sliding_arrs]).reshape(-1,)
-        
-        # memfile
-        f_name = str(arr[0,0,0])+'_full.dat'
-        f_shape = arr.shape
-        fp = np.memmap(f_name, dtype='<U32', mode='w+', shape=f_shape)
-        fp[:] = arr[:]
-        fp.flush()
-        
-        # cleanup individual memfiles
-        [os.remove(tup[0]) for tup in sliding_arrs]
-        
-        del arr, fp
-        gc.collect()
-        
-        return f_name, f_shape, pad_arr
-    
-    def static_infer_arrs(self, df):
-        """
-        Use for creating static train/test datasets i.e. non-generator based training
-        """
-        groups = df.groupby([self.id_col])
-        sliding_arrs = Parallel(n_jobs=self.PARALLEL_DATA_JOBS, batch_size=self.PARALLEL_DATA_JOBS_BATCHSIZE)(delayed(self.extract_infer_windows)(gdf[self.col_list].values, gdf[self.time_index_col].values) for _, gdf in groups)
-        
-        arr_list = [tup[0] for tup in sliding_arrs]
-        pad_list = [tup[1] for tup in sliding_arrs]
-        date_list = [tup[2] for tup in sliding_arrs]
-        
-        arr = np.concatenate(arr_list, axis=0) # 3-D array
-        pad_arr = np.concatenate(pad_list, axis=0) # 1-D array
-        date_arr = np.concatenate(date_list, axis=0) # 1-D array
-        id_arr = arr[:,-1:,0] 
-        
-        return arr, pad_arr, id_arr, date_arr
-    
-    def extract_windows(self, array):
-        """
-        Writes out 3-D numpy arrays (num_series, seq_len, num_cols) to memmap files to be merged later
-        """
-        # pad if array size < window_size i.e
-        array_size = array.shape[0]
-        pad_len = 0
-        if array_size >= self.window_len:
-            max_records = int(array.shape[0] - self.window_len + 1)
-        else:
-            max_records = 1
-            pad_len = int(self.window_len - array_size)
-            array = np.pad(array, pad_width=((pad_len,0),(0,0)), mode='constant', constant_values=0)
-        
-        sub_windows = (np.expand_dims(np.arange(self.window_len), 0) + np.expand_dims(np.arange(max_records, step=self.interleave), 0).T)
-    
-        array = array[sub_windows]
-        pad_array = (np.zeros((array.shape[0],), dtype=np.int32) + pad_len).reshape(-1,1)
-        
-        # memfile
-        f_name = str(array[0,0,0])+'.dat'
-        shape = array.shape
-        fp = np.memmap(f_name, dtype='<U32', mode='w+', shape=shape)
-        fp[:] = array[:]
-        fp.flush()
-         
-        del array
-        gc.collect()
-        
-        return (f_name, shape, pad_array)
-        
-    def extract_infer_windows(self, array, date_array):
-        # pad if array size < window_size i.e
-        array_size = array.shape[0]
-        pad_len = 0
-        if array_size >= self.window_len:
-            max_records = int(array.shape[0] - self.window_len + 1)
-        else:
-            max_records = 1
-            pad_len = int(self.window_len - array_size)
-            array = np.pad(array, pad_width=((pad_len,0),(0,0)), mode='constant', constant_values=0)
-            date_array = np.pad(date_array, pad_width=((pad_len,0),), mode='constant', constant_values=0)
-        
-        sub_windows = (np.expand_dims(np.arange(self.window_len), 0) + np.expand_dims(np.arange(max_records, step=self.interleave), 0).T)
-    
-        arr = array[sub_windows]
-        date_arr = date_array[sub_windows]
-        date_arr = date_arr[:,-self.fh:]
-        pad_arr = np.zeros((arr.shape[0],), dtype=np.int32) + pad_len
-        
-        return (arr, pad_arr, date_arr)
-    
-    
+
     def df_sampler(self, gdf):
         """
         Helper function for select_arrs
@@ -331,6 +216,21 @@ class tfr_dataset:
         date_arr = np.stack(date_list, axis=0)
         id_arr = arr[:,-1:,0]
         
+        """
+        arr_list = []
+        pad_list = []
+        date_list = []
+        for gname, gdf in data.groupby([self.id_col]):
+            arr, pad_len = self.df_sampler(gdf)
+            date_arr = gdf[self.time_index_col].tail(self.fh).values
+            arr_list.append(arr)
+            pad_list.append(pad_len)
+            date_list.append(date_arr)
+        arr = np.stack(arr_list, axis=0)
+        pad_arr = np.stack(pad_list, axis=0)
+        date_arr = np.stack(date_list, axis=0)
+        id_arr = arr[:,-1:,0]
+        """
         return arr, pad_arr, id_arr, date_arr
     
     def sort_dataset(self, data):
@@ -377,69 +277,8 @@ class tfr_dataset:
             arr = arr[valid_indices]
             pad_arr = pad_arr[valid_indices]
             model_in, model_out, scale, weights  = self.preprocess(arr, pad_arr)
-            yield model_in.astype(str), model_out.astype(np.float32), scale.astype(np.float32), weights.astype(np.float32)
-            
-    def static_dataset(self, data, batchsize):
-        """
-        piecewise processing using np.memmap; works with arrays much larger than available memory
-        
-        """
-        f_name, f_shape, pad_arr = self.static_arrs(data[self.col_list])
-       
-        fp = np.memmap(f_name, dtype='<U32', mode='r', shape=f_shape)
-        num_batches = int((len(fp) // batchsize) + (1 if (len(fp) % batchsize)!=0 else 0))
-        
-        model_in_files = {}
-        model_out_files = {}
-        scale_files = {}
-        weights_files = {}
-        
-        for i in range(num_batches):
-            fp_batch, pad_batch = fp[i*batchsize:(i+1)*batchsize], pad_arr[i*batchsize:(i+1)*batchsize]
-            
-            # filter
-            valid_indices = np.where(np.count_nonzero(fp_batch[:,:self.window_len-self.fh,self.target_index].astype(np.float32)>0, axis=1)>=self.min_nz)
-            fp_batch = fp_batch[valid_indices]
-            pad_batch = pad_batch[valid_indices]
-            
-            # shuffle
-            p = np.random.permutation(len(fp_batch))
-            fp_batch, pad_batch = fp_batch[p], pad_batch[p]
-            model_in_batch, model_out_batch, scale_batch, weights_batch  = self.preprocess(fp_batch, pad_batch)
-            
-            # write to memmap
-            model_in_batch_name = str(fp_batch[0,0,0]) + '_' + str(i) + '_model_in.dat'
-            model_in_mmap = np.memmap(model_in_batch_name, dtype='<U32', mode='w+', shape=model_in_batch.shape)
-            model_in_mmap[:] = model_in_batch[:]
-            model_in_mmap.flush()
-            
-            model_out_batch_name = str(fp_batch[0,0,0]) + '_' + str(i) + '_model_out.dat'
-            model_out_mmap = np.memmap(model_out_batch_name, dtype='<U32', mode='w+', shape=model_out_batch.shape)
-            model_out_mmap[:] = model_out_batch[:]
-            model_out_mmap.flush()
-            
-            scale_batch_name = str(fp_batch[0,0,0]) + '_' + str(i) + '_scale.dat'
-            scale_mmap = np.memmap(scale_batch_name, dtype='<U32', mode='w+', shape=scale_batch.shape)
-            scale_mmap[:] = scale_batch[:]
-            scale_mmap.flush()
-            
-            wts_batch_name = str(fp_batch[0,0,0]) + '_' + str(i) + '_weights.dat'
-            wts_mmap = np.memmap(wts_batch_name, dtype='<U32', mode='w+', shape=weights_batch.shape)
-            wts_mmap[:] = weights_batch[:]
-            wts_mmap.flush()
-         
-            model_in_files[model_in_batch_name] = model_in_batch.shape
-            model_out_files[model_out_batch_name] = model_out_batch.shape
-            scale_files[scale_batch_name] = scale_batch.shape
-            weights_files[wts_batch_name] = weights_batch.shape
-        
-        del fp, pad_arr
-        gc.collect()
-        os.remove(f_name)
-        
-        return model_in_files, model_out_files, scale_files, weights_files
-    
-            
+            yield model_in.astype(str), model_out.astype(float), scale.astype(float), weights.astype(float)
+
     def vocab_list(self, data):
         """
         Function to generate default embedding dimensions for categorical vars as 3rd root of no. of unique values.
@@ -572,7 +411,7 @@ class tfr_dataset:
         test_data = data[data[self.time_index_col]<=self.test_till].groupby(self.id_col).apply(lambda x: x[-self.window_len:]).reset_index(drop=True)
         return train_data, test_data
     
-    def train_test_dataset(self, data, train_till, test_till, low_memory=True):
+    def train_test_dataset(self, data, train_till, test_till):
         self.train_till = train_till
         self.test_till = test_till
         
@@ -589,65 +428,26 @@ class tfr_dataset:
         # check samples
         check_gen = self.data_generator(train_data)
         x, y, s, w = next(check_gen)
+        
         num_features = x.shape[-1]
         
-        if low_memory:
-            trainset = tf.data.Dataset.from_generator(lambda: self.data_generator(train_data),
-                                                      output_signature=(tf.TensorSpec(shape=(None, self.window_len, num_features), dtype=tf.string),
-                                                                        tf.TensorSpec(shape=(None, self.fh, 1), dtype=tf.float32),
-                                                                        tf.TensorSpec(shape=(None, self.fh, 1), dtype=tf.float32),
-                                                                        tf.TensorSpec(shape=(None, 1), dtype=tf.float32)))
+        trainset = tf.data.Dataset.from_generator(lambda: self.data_generator(train_data),
+                                                  output_types=(tf.string, tf.float32, tf.float32, tf.float32),
+                                                  output_shapes=(tf.TensorShape((None, self.window_len, num_features)),
+                                                                 tf.TensorShape((None, self.fh, 1)),
+                                                                 tf.TensorShape((None, self.fh, 1)),
+                                                                 tf.TensorShape((None, 1))) )
         
-            testset = tf.data.Dataset.from_generator(lambda: self.data_generator(test_data),
-                                                     output_signature=(tf.TensorSpec(shape=(None, self.window_len, num_features), dtype=tf.string),
-                                                                       tf.TensorSpec(shape=(None, self.fh, 1), dtype=tf.float32),
-                                                                       tf.TensorSpec(shape=(None, self.fh, 1), dtype=tf.float32),
-                                                                       tf.TensorSpec(shape=(None, 1), dtype=tf.float32)))
-        else:
-            SHUFFLE_BUFFER_SIZE = int(m.ceil(train_data[self.id_col].nunique()*0.01)*self.batch)
-            BATCH_SIZE = self.batch
-            
-            train_x, train_y, train_z, train_w = self.static_dataset(train_data, batchsize=self.batch*max(m.ceil(train_data[self.id_col].nunique()*0.01), 200))
-            test_x, test_y, test_z, test_w = self.static_dataset(test_data, batchsize=self.batch*max(m.ceil(test_data[self.id_col].nunique()*0.01), 200))
-               
-            def train_data_generator():
-                train_datasets = []
-                for (k1,v1), (k2,v2), (k3,v3), (k4,v4) in zip(train_x.items(), train_y.items(), train_z.items(), train_w.items()):
-                    model_in = np.memmap(k1, dtype='<U32', mode='r', shape=v1)
-                    model_out = np.memmap(k2, dtype='<U32', mode='r', shape=v2)
-                    scale = np.memmap(k3, dtype='<U32', mode='r', shape=v3)
-                    weights = np.memmap(k4, dtype='<U32', mode='r', shape=v4)
-                    ds = tf.data.Dataset.from_tensor_slices((model_in.astype(str), model_out.astype(np.float32), scale.astype(np.float32), weights.astype(np.float32)))
-                    train_datasets.append(ds)
-                return train_datasets
-                
-
-            def test_data_generator():
-                test_datasets = []
-                for (k1,v1), (k2,v2), (k3,v3), (k4,v4) in zip(test_x.items(), test_y.items(), test_z.items(), test_w.items()):
-                    model_in = np.memmap(k1, dtype='<U32', mode='r', shape=v1)
-                    model_out = np.memmap(k2, dtype='<U32', mode='r', shape=v2)
-                    scale = np.memmap(k3, dtype='<U32', mode='r', shape=v3)
-                    weights = np.memmap(k4, dtype='<U32', mode='r', shape=v4)
-                    ds = tf.data.Dataset.from_tensor_slices((model_in.astype(str), model_out.astype(np.float32), scale.astype(np.float32), weights.astype(np.float32)))
-                    test_datasets.append(ds)
-                return test_datasets
-                
-            train_datasets = train_data_generator()
-            test_datasets = test_data_generator()
-            
-            if tf.__version__ < "2.7.0":
-                tf.data.experimental.sample_from_datasets
-                trainset = tf.data.experimental.sample_from_datasets(train_datasets).batch(BATCH_SIZE, drop_remainder=True) #num_parallel_calls=self.PARALLEL_DATA_JOBS)
-                testset = tf.data.experimental.sample_from_datasets(test_datasets).batch(BATCH_SIZE, drop_remainder=False) #num_parallel_calls=self.PARALLEL_DATA_JOBS)
-            else:
-                trainset = tf.data.Dataset.sample_from_datasets(train_datasets).batch(BATCH_SIZE, drop_remainder=True) #num_parallel_calls=self.PARALLEL_DATA_JOBS)
-                testset = tf.data.Dataset.sample_from_datasets(test_datasets).batch(BATCH_SIZE, drop_remainder=False) #num_parallel_calls=self.PARALLEL_DATA_JOBS)
-                    
+        testset = tf.data.Dataset.from_generator(lambda: self.data_generator(test_data),
+                                                output_types=(tf.string, tf.float32, tf.float32, tf.float32),
+                                                output_shapes=(tf.TensorShape((None, self.window_len, num_features)), 
+                                                               tf.TensorShape((None, self.fh, 1)),
+                                                               tf.TensorShape((None, self.fh, 1)),
+                                                               tf.TensorShape((None, 1))))
+       
         return trainset, testset
     
-    
-    def infer_dataset(self, data, history_till, future_till, low_memory=True):
+    def infer_dataset(self, data, history_till, future_till):
         self.history_till = history_till
         self.future_till = future_till
         
@@ -660,15 +460,9 @@ class tfr_dataset:
         # sort & filter to recent context
         data = self.sort_dataset(data)
         data = data[data[self.time_index_col]<=self.future_till].groupby(self.id_col).apply(lambda x: x[-self.window_len:]).reset_index(drop=True)
-        
-        if low_memory:
-            arr, pad_arr, id_arr, date_arr = self.select_all_arrs(data)
-        else:
-            arr, pad_arr, id_arr, date_arr = self.static_infer_arrs(data)
-        
+        arr, pad_arr, id_arr, date_arr = self.select_all_arrs(data)
         model_in, model_out, scale, _ = self.preprocess(arr, pad_arr)
         input_tensor = tf.convert_to_tensor(model_in.astype(str), dtype=tf.string)
-        
         # for evaluation
         actuals_arr = model_out*scale
         
@@ -702,7 +496,7 @@ class tfr_dataset:
          
         return [input_tensor, scale, id_arr, date_arr], actuals_df
     
-    def baseline_infer_dataset(self, data, history_till, future_till, ignore_cols, ignore_pad_values, low_memory=True):
+    def baseline_infer_dataset(self, data, history_till, future_till, ignore_cols):
         self.history_till = history_till
         self.future_till = future_till
         
@@ -716,16 +510,21 @@ class tfr_dataset:
         data = self.sort_dataset(data)
         data = data[data[self.time_index_col]<=self.future_till].groupby(self.id_col).apply(lambda x: x[-self.window_len:]).reset_index(drop=True)
         
-        # mask out columns in ignore_cols for baseline forecast
-        for col,val in zip(ignore_cols, ignore_pad_values):
-            data[col] = np.where(data[self.time_index_col]>self.history_till, val, data[col])
+        # zero out columns in ignore_cols for baseline forecast
+        for col in ignore_cols:
+            data[col] = np.where(data[self.time_index_col]>self.history_till, 0, data[col])
         
-        if low_memory:
-            arr, pad_arr, id_arr, date_arr = self.select_all_arrs(data)
-        else:
-            arr, pad_arr, id_arr, date_arr = self.static_infer_arrs(data)
-            
+        arr, pad_arr, id_arr, date_arr = self.select_all_arrs(data)
         model_in, model_out, scale, _ = self.preprocess(arr, pad_arr)
         input_tensor = tf.convert_to_tensor(model_in.astype(str), dtype=tf.string)
         
         return [input_tensor, scale, id_arr, date_arr]
+
+    
+
+
+# In[ ]:
+
+
+
+

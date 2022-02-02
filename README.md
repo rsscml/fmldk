@@ -4,8 +4,10 @@ This library uses the Tensorflow & Tensorflow-Probability deep learning librarie
 
 ##### Supported versions:     
 
-Tensorflow [2.4.0 - 2.7.0]   
-Tensorflow-Probability [0.10.0 - 0.12.0]  
+Tensorflow [2.4.0+ ]   
+Tensorflow-Probability [0.10.0+ ]    
+
+Note: If upgrading Tensorflow, skip v2.6.0 (buggy) & go to 2.7.0 or higher
 
 A typical workflow will look like this:
 
@@ -271,3 +273,16 @@ Where,
 Train: Same as Feature_Weighted_Transformer
 
 ````
+### New in v0.1.13
+````
+Added a switch 'low_memory' to the tfr_dataset.train_test_dataset method.
+Default: low_memory = True (uses tf.data.Dataset.from_generator API for generating train/test batches). Uses less memory at the expense of speed.
+         low_memory = False, uses numpy (memmap files) arrays in tf.data.Dataset.from_tensor_slices(). Initial trainset/testset creation takes time but the training speed improves by 4x.
+
+trainset, testset = data_obj.train_test_dataset(df, 
+                                               train_till=pd.to_datetime('2015-12-31', format='%Y-%M-%d'), 
+                                               test_till=pd.to_datetime('2016-01-31', format='%Y-%M-%d'),
+                                               low_memory=True)
+
+````
+ 

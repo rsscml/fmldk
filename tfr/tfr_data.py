@@ -9,6 +9,7 @@ import tensorflow_probability as tfp
 tfd = tfp.distributions
 import pandas as pd
 import numpy as np
+import dask.array as da 
 from joblib import Parallel, delayed
 import itertools
 import random
@@ -21,8 +22,18 @@ import gc
 import math as m
 import time
 
+
 class tfr_dataset:
-    def __init__(self, col_dict, window_len, fh, batch, min_nz, interleave=1, PARALLEL_DATA_JOBS=1, PARALLEL_DATA_JOBS_BATCHSIZE=64):
+    def __init__(self, 
+                 col_dict, 
+                 window_len, 
+                 fh, 
+                 batch, 
+                 min_nz, 
+                 interleave=1, 
+                 PARALLEL_DATA_JOBS=1, 
+                 PARALLEL_DATA_JOBS_BATCHSIZE=64, 
+                 WORKDIR='/tmp/'):
         """
         col_dict: dictionary of various column groups {id_col:'',
                                                        target_col:'',
@@ -50,6 +61,7 @@ class tfr_dataset:
         self.interleave = interleave
         self.PARALLEL_DATA_JOBS = PARALLEL_DATA_JOBS
         self.PARALLEL_DATA_JOBS_BATCHSIZE = PARALLEL_DATA_JOBS_BATCHSIZE
+        self.workdir = str(WORKDIR).rstrip('/\\').strip()
        
         # extract columnsets from col_dict
         self.id_col = self.col_dict.get('id_col', None)
@@ -176,20 +188,41 @@ class tfr_dataset:
         gc.collect()
         
         '''
-        arr = np.vstack([np.memmap(tup[0], dtype='<U32', mode='r', shape=tup[1])  for tup in sliding_arrs])
+        print("Id specific memmap files creation completed. Beginning merge ...")
+        #arr = np.vstack([np.memmap(tup[0], dtype='<U32', mode='r', shape=tup[1])  for tup in sliding_arrs])
+        sample_arr = np.memmap(sliding_arrs[0][0], dtype='<U32', mode='r', shape=sliding_arrs[0][1])
+        x_size = sum([tup[1][0] for tup in sliding_arrs])
+        y_size = self.window_len
+        z_size = sliding_arrs[0][1][2]
+        f_name = self.workdir + '/' + str(sample_arr[0,0,0]) +'_full.dat'
+    
+        arr = np.memmap(f_name, dtype='<U32', mode='w+', shape=(x_size, y_size, z_size))
+        
+        init_size = 0
+        for mem_arr in [(np.memmap(tup[0], dtype='<U32', mode='r', shape=tup[1]), tup[1]) for tup in sliding_arrs]:
+            shape = mem_arr[1][0]
+            arr[init_size:init_size + shape,:,:] = mem_arr[0]
+            init_size += shape
+        arr.flush()
+        f_shape = arr.shape
         pad_arr = np.vstack([tup[2] for tup in sliding_arrs]).reshape(-1,)
         
+        print("Memmap merge completed.")
+        
         # memfile
-        f_name = str(arr[0,0,0])+'_full.dat'
-        f_shape = arr.shape
-        fp = np.memmap(f_name, dtype='<U32', mode='w+', shape=f_shape)
-        fp[:] = arr[:]
-        fp.flush()
+        #f_name = self.workdir + '/' + str(arr[0,0,0])+'_full.dat'
+        #f_shape = arr.shape
+        #fp = np.memmap(f_name, dtype='<U32', mode='w+', shape=f_shape)
+        #fp[:] = arr[:]
+        #fp.flush()
         
         # cleanup individual memfiles
-        [os.remove(tup[0]) for tup in sliding_arrs]
+        try:
+            [os.remove(tup[0]) for tup in sliding_arrs]
+        except:
+            pass
         
-        del arr, fp
+        del arr
         gc.collect()
         
         return f_name, f_shape, pad_arr
@@ -232,7 +265,7 @@ class tfr_dataset:
         pad_array = (np.zeros((array.shape[0],), dtype=np.int32) + pad_len).reshape(-1,1)
         
         # memfile
-        f_name = str(array[0,0,0])+'.dat'
+        f_name = self.workdir + '/' + str(array[0,0,0]) + '.dat'
         shape = array.shape
         fp = np.memmap(f_name, dtype='<U32', mode='w+', shape=shape)
         fp[:] = array[:]
@@ -240,7 +273,7 @@ class tfr_dataset:
          
         del array
         gc.collect()
-        
+    
         return (f_name, shape, pad_array)
         
     def extract_infer_windows(self, array, date_array):
@@ -408,22 +441,22 @@ class tfr_dataset:
             model_in_batch, model_out_batch, scale_batch, weights_batch  = self.preprocess(fp_batch, pad_batch)
             
             # write to memmap
-            model_in_batch_name = str(fp_batch[0,0,0]) + '_' + str(i) + '_model_in.dat'
+            model_in_batch_name = self.workdir + '/' + str(fp_batch[0,0,0]) + '_' + str(i) + '_model_in.dat'
             model_in_mmap = np.memmap(model_in_batch_name, dtype='<U32', mode='w+', shape=model_in_batch.shape)
             model_in_mmap[:] = model_in_batch[:]
             model_in_mmap.flush()
             
-            model_out_batch_name = str(fp_batch[0,0,0]) + '_' + str(i) + '_model_out.dat'
+            model_out_batch_name = self.workdir + '/' + str(fp_batch[0,0,0]) + '_' + str(i) + '_model_out.dat'
             model_out_mmap = np.memmap(model_out_batch_name, dtype='<U32', mode='w+', shape=model_out_batch.shape)
             model_out_mmap[:] = model_out_batch[:]
             model_out_mmap.flush()
             
-            scale_batch_name = str(fp_batch[0,0,0]) + '_' + str(i) + '_scale.dat'
+            scale_batch_name = self.workdir + '/' + str(fp_batch[0,0,0]) + '_' + str(i) + '_scale.dat'
             scale_mmap = np.memmap(scale_batch_name, dtype='<U32', mode='w+', shape=scale_batch.shape)
             scale_mmap[:] = scale_batch[:]
             scale_mmap.flush()
             
-            wts_batch_name = str(fp_batch[0,0,0]) + '_' + str(i) + '_weights.dat'
+            wts_batch_name = self.workdir + '/' + str(fp_batch[0,0,0]) + '_' + str(i) + '_weights.dat'
             wts_mmap = np.memmap(wts_batch_name, dtype='<U32', mode='w+', shape=weights_batch.shape)
             wts_mmap[:] = weights_batch[:]
             wts_mmap.flush()
@@ -435,7 +468,11 @@ class tfr_dataset:
         
         del fp, pad_arr
         gc.collect()
-        os.remove(f_name)
+        
+        try:
+            os.remove(f_name)
+        except:
+            pass
         
         return model_in_files, model_out_files, scale_files, weights_files
     
@@ -729,3 +766,12 @@ class tfr_dataset:
         input_tensor = tf.convert_to_tensor(model_in.astype(str), dtype=tf.string)
         
         return [input_tensor, scale, id_arr, date_arr]
+
+    
+
+
+# In[ ]:
+
+
+
+

@@ -1095,7 +1095,8 @@ def Transformer_Train(model,
      logdir: tensorflow training logs for tensorboard
         
     """
-    
+
+    @tf.function
     def trainstep(model, optimizer, x_train, y_train, scale, wts, training):
         with tf.GradientTape() as tape:
             o, s = model(x_train, training=training)
@@ -1120,7 +1121,8 @@ def Transformer_Train(model,
         grads = tape.gradient(loss, model.trainable_variables)
         optimizer.apply_gradients((grad, var) for (grad, var) in zip(grads, model.trainable_variables) if grad is not None)
         return loss, o
-    
+
+    @tf.function
     def teststep(model, x_test, y_test, scale, wts, training):
         o, s = model(x_test, training=training)
         out_len = tf.shape(s)[1]
@@ -1775,7 +1777,8 @@ def VarTransformer_Train(model,
      logdir: tensorflow training logs for tensorboard
         
     """
-    
+
+    @tf.function
     def trainstep(model, optimizer, x_train, y_train, scale, wts, training):
         with tf.GradientTape() as tape:
             o, s, f = model(x_train, training=training)
@@ -1800,7 +1803,8 @@ def VarTransformer_Train(model,
         grads = tape.gradient(loss, model.trainable_variables)
         optimizer.apply_gradients((grad, var) for (grad, var) in zip(grads, model.trainable_variables) if grad is not None)
         return loss, o
-    
+
+    @tf.function
     def teststep(model, x_test, y_test, scale, wts, training):
         o, s, f = model(x_test, training=training)
         out_len = tf.shape(s)[1]
@@ -2245,4 +2249,3 @@ class Feature_Weighted_Transformer:
         
         return results_df
     
-

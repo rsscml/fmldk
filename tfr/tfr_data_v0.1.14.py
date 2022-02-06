@@ -9,6 +9,7 @@ import tensorflow_probability as tfp
 tfd = tfp.distributions
 import pandas as pd
 import numpy as np
+import dask.array as da 
 from joblib import Parallel, delayed
 import itertools
 import random
@@ -165,47 +166,67 @@ class tfr_dataset:
         pad_arr = np.stack(pad_list, axis=0)
         return arr, pad_arr
     
-    def static_arrs(self, df, use_memmap, prefix):
+    def static_arrs(self, df):
         """
         Use for creating static train/test datasets i.e. non-generator based training
         """
         groups = df.groupby([self.id_col])
-        sliding_arrs = Parallel(n_jobs=self.PARALLEL_DATA_JOBS, batch_size=self.PARALLEL_DATA_JOBS_BATCHSIZE)(delayed(self.extract_windows)(gdf.values, use_memmap) for _, gdf in groups)
+        sliding_arrs = Parallel(n_jobs=self.PARALLEL_DATA_JOBS, batch_size=self.PARALLEL_DATA_JOBS_BATCHSIZE)(delayed(self.extract_windows)(gdf.values) for _, gdf in groups)
         
-        if use_memmap:
-            print("Id specific memmap files creation completed. Beginning merge ...")
-            sample_arr = np.memmap(sliding_arrs[0][0], dtype='<U32', mode='r', shape=sliding_arrs[0][1])
-            x_size = sum([tup[1][0] for tup in sliding_arrs])
-            y_size = self.window_len
-            z_size = sliding_arrs[0][1][2]
-            f_name = self.workdir + '/' + str(prefix) + str(sample_arr[0,0,0]) +'_full.dat'
+        '''
+        model_in_list = [tup[0] for tup in sliding_arrs]
+        model_out_list = [tup[1] for tup in sliding_arrs]
+        scale_list = [tup[2] for tup in sliding_arrs]
+        weights_list = [tup[3] for tup in sliding_arrs]
+        
+        model_in = np.concatenate(model_in_list, axis=0)
+        model_out = np.concatenate(model_out_list, axis=0) 
+        scale = np.concatenate(scale_list, axis=0) 
+        weights = np.concatenate(weights_list, axis=0) 
+        
+        del model_in_list, model_out_list, scale_list, weights_list
+        gc.collect()
+        
+        '''
+        print("Id specific memmap files creation completed. Beginning merge ...")
+        #arr = np.vstack([np.memmap(tup[0], dtype='<U32', mode='r', shape=tup[1])  for tup in sliding_arrs])
+        sample_arr = np.memmap(sliding_arrs[0][0], dtype='<U32', mode='r', shape=sliding_arrs[0][1])
+        x_size = sum([tup[1][0] for tup in sliding_arrs])
+        y_size = self.window_len
+        z_size = sliding_arrs[0][1][2]
+        f_name = self.workdir + '/' + str(sample_arr[0,0,0]) +'_full.dat'
     
-            arr = np.memmap(f_name, dtype='<U32', mode='w+', shape=(x_size, y_size, z_size))
+        arr = np.memmap(f_name, dtype='<U32', mode='w+', shape=(x_size, y_size, z_size))
         
-            init_size = 0
-            for mem_arr in [(np.memmap(tup[0], dtype='<U32', mode='r', shape=tup[1]), tup[1]) for tup in sliding_arrs]:
-                shape = mem_arr[1][0]
-                arr[init_size:init_size + shape,:,:] = mem_arr[0]
-                init_size += shape
-            arr.flush()
-            f_shape = arr.shape
-            pad_arr = np.vstack([tup[2] for tup in sliding_arrs]).reshape(-1,)
-            print("Memmap merge completed.")
+        init_size = 0
+        for mem_arr in [(np.memmap(tup[0], dtype='<U32', mode='r', shape=tup[1]), tup[1]) for tup in sliding_arrs]:
+            shape = mem_arr[1][0]
+            arr[init_size:init_size + shape,:,:] = mem_arr[0]
+            init_size += shape
+        arr.flush()
+        f_shape = arr.shape
+        pad_arr = np.vstack([tup[2] for tup in sliding_arrs]).reshape(-1,)
         
-            # cleanup individual memfiles
-            try:
-                [os.remove(tup[0]) for tup in sliding_arrs]
-            except:
-                pass
-            del arr
-            gc.collect()
-            return f_name, f_shape, pad_arr
-        else:
-            arr = np.vstack([tup[0] for tup in sliding_arrs])
-            pad_arr = np.vstack([tup[1] for tup in sliding_arrs]).reshape(-1,)
-            return arr, pad_arr
-
+        print("Memmap merge completed.")
         
+        # memfile
+        #f_name = self.workdir + '/' + str(arr[0,0,0])+'_full.dat'
+        #f_shape = arr.shape
+        #fp = np.memmap(f_name, dtype='<U32', mode='w+', shape=f_shape)
+        #fp[:] = arr[:]
+        #fp.flush()
+        
+        # cleanup individual memfiles
+        try:
+            [os.remove(tup[0]) for tup in sliding_arrs]
+        except:
+            pass
+        
+        del arr
+        gc.collect()
+        
+        return f_name, f_shape, pad_arr
+    
     def static_infer_arrs(self, df):
         """
         Use for creating static train/test datasets i.e. non-generator based training
@@ -224,7 +245,7 @@ class tfr_dataset:
         
         return arr, pad_arr, id_arr, date_arr
     
-    def extract_windows(self, array, use_memmap):
+    def extract_windows(self, array):
         """
         Writes out 3-D numpy arrays (num_series, seq_len, num_cols) to memmap files to be merged later
         """
@@ -243,18 +264,17 @@ class tfr_dataset:
         array = array[sub_windows]
         pad_array = (np.zeros((array.shape[0],), dtype=np.int32) + pad_len).reshape(-1,1)
         
-        if use_memmap:
-            # memfile
-            f_name = self.workdir + '/' + str(array[0,0,0]) + '.dat'
-            shape = array.shape
-            fp = np.memmap(f_name, dtype='<U32', mode='w+', shape=shape)
-            fp[:] = array[:]
-            fp.flush()
-            del array
-            gc.collect()     
-            return (f_name, shape, pad_array)
-        else:
-            return (array, pad_array)
+        # memfile
+        f_name = self.workdir + '/' + str(array[0,0,0]) + '.dat'
+        shape = array.shape
+        fp = np.memmap(f_name, dtype='<U32', mode='w+', shape=shape)
+        fp[:] = array[:]
+        fp.flush()
+         
+        del array
+        gc.collect()
+    
+        return (f_name, shape, pad_array)
         
     def extract_infer_windows(self, array, date_array):
         # pad if array size < window_size i.e
@@ -392,87 +412,70 @@ class tfr_dataset:
             model_in, model_out, scale, weights  = self.preprocess(arr, pad_arr)
             yield model_in.astype(str), model_out.astype(np.float32), scale.astype(np.float32), weights.astype(np.float32)
             
-    def static_dataset(self, data, batchsize, use_memmap, prefix='train'):
+    def static_dataset(self, data, batchsize):
         """
         piecewise processing using np.memmap; works with arrays much larger than available memory
         
         """
+        f_name, f_shape, pad_arr = self.static_arrs(data[self.col_list])
+       
+        fp = np.memmap(f_name, dtype='<U32', mode='r', shape=f_shape)
+        num_batches = int((len(fp) // batchsize) + (1 if (len(fp) % batchsize)!=0 else 0))
         
-        if use_memmap:
-            f_name, f_shape, pad_arr = self.static_arrs(data[self.col_list], use_memmap, prefix)
-            fp = np.memmap(f_name, dtype='<U32', mode='r', shape=f_shape)
-            num_batches = int((len(fp) // batchsize) + (1 if (len(fp) % batchsize)!=0 else 0))
+        model_in_files = {}
+        model_out_files = {}
+        scale_files = {}
+        weights_files = {}
         
-            model_in_files = {}
-            model_out_files = {}
-            scale_files = {}
-            weights_files = {}
-        
-            for i in range(num_batches):
-                fp_batch, pad_batch = fp[i*batchsize:(i+1)*batchsize], pad_arr[i*batchsize:(i+1)*batchsize]
-            
-                # filter
-                valid_indices = np.where(np.count_nonzero(fp_batch[:,:self.window_len-self.fh,self.target_index].astype(np.float32)>0, axis=1)>=self.min_nz)
-                fp_batch = fp_batch[valid_indices]
-                pad_batch = pad_batch[valid_indices]
-            
-                # shuffle
-                p = np.random.permutation(len(fp_batch))
-                fp_batch, pad_batch = fp_batch[p], pad_batch[p]
-                model_in_batch, model_out_batch, scale_batch, weights_batch  = self.preprocess(fp_batch, pad_batch)
-            
-                # write to memmap
-                model_in_batch_name = self.workdir + '/' + str(prefix) + str(fp_batch[0,0,0]) + '_' + str(i) + '_model_in.dat'
-                model_in_mmap = np.memmap(model_in_batch_name, dtype='<U32', mode='w+', shape=model_in_batch.shape)
-                model_in_mmap[:] = model_in_batch[:]
-                model_in_mmap.flush()
-            
-                model_out_batch_name = self.workdir + '/' + str(prefix) + str(fp_batch[0,0,0]) + '_' + str(i) + '_model_out.dat'
-                model_out_mmap = np.memmap(model_out_batch_name, dtype='<U32', mode='w+', shape=model_out_batch.shape)
-                model_out_mmap[:] = model_out_batch[:]
-                model_out_mmap.flush()
-            
-                scale_batch_name = self.workdir + '/' + str(prefix) + str(fp_batch[0,0,0]) + '_' + str(i) + '_scale.dat'
-                scale_mmap = np.memmap(scale_batch_name, dtype='<U32', mode='w+', shape=scale_batch.shape)
-                scale_mmap[:] = scale_batch[:]
-                scale_mmap.flush()
-            
-                wts_batch_name = self.workdir + '/' + str(prefix) + str(fp_batch[0,0,0]) + '_' + str(i) + '_weights.dat'
-                wts_mmap = np.memmap(wts_batch_name, dtype='<U32', mode='w+', shape=weights_batch.shape)
-                wts_mmap[:] = weights_batch[:]
-                wts_mmap.flush()
-         
-                model_in_files[model_in_batch_name] = model_in_batch.shape
-                model_out_files[model_out_batch_name] = model_out_batch.shape
-                scale_files[scale_batch_name] = scale_batch.shape
-                weights_files[wts_batch_name] = weights_batch.shape
-        
-            del fp, pad_arr
-            gc.collect()
-        
-            try:
-                os.remove(f_name)
-            except:
-                pass
-        
-            return model_in_files, model_out_files, scale_files, weights_files
-        else:
-            arr, pad_arr = self.static_arrs(data[self.col_list], use_memmap, prefix)
+        for i in range(num_batches):
+            fp_batch, pad_batch = fp[i*batchsize:(i+1)*batchsize], pad_arr[i*batchsize:(i+1)*batchsize]
             
             # filter
-            valid_indices = np.where(np.count_nonzero(arr[:,:self.window_len-self.fh,self.target_index].astype(np.float32)>0,axis=1)>=self.min_nz)
-            arr = arr[valid_indices]
-            pad_arr = pad_arr[valid_indices]
+            valid_indices = np.where(np.count_nonzero(fp_batch[:,:self.window_len-self.fh,self.target_index].astype(np.float32)>0, axis=1)>=self.min_nz)
+            fp_batch = fp_batch[valid_indices]
+            pad_batch = pad_batch[valid_indices]
             
             # shuffle
-            p = np.random.permutation(len(arr))
-            arr, pad_arr = arr[p], pad_arr[p]
+            p = np.random.permutation(len(fp_batch))
+            fp_batch, pad_batch = fp_batch[p], pad_batch[p]
+            model_in_batch, model_out_batch, scale_batch, weights_batch  = self.preprocess(fp_batch, pad_batch)
             
-            model_in, model_out, scale, weights  = self.preprocess(arr, pad_arr)
-            del arr, pad_arr
-            gc.collect()
+            # write to memmap
+            model_in_batch_name = self.workdir + '/' + str(fp_batch[0,0,0]) + '_' + str(i) + '_model_in.dat'
+            model_in_mmap = np.memmap(model_in_batch_name, dtype='<U32', mode='w+', shape=model_in_batch.shape)
+            model_in_mmap[:] = model_in_batch[:]
+            model_in_mmap.flush()
             
-            return model_in.astype(str), model_out.astype(np.float32), scale.astype(np.float32), weights.astype(np.float32)
+            model_out_batch_name = self.workdir + '/' + str(fp_batch[0,0,0]) + '_' + str(i) + '_model_out.dat'
+            model_out_mmap = np.memmap(model_out_batch_name, dtype='<U32', mode='w+', shape=model_out_batch.shape)
+            model_out_mmap[:] = model_out_batch[:]
+            model_out_mmap.flush()
+            
+            scale_batch_name = self.workdir + '/' + str(fp_batch[0,0,0]) + '_' + str(i) + '_scale.dat'
+            scale_mmap = np.memmap(scale_batch_name, dtype='<U32', mode='w+', shape=scale_batch.shape)
+            scale_mmap[:] = scale_batch[:]
+            scale_mmap.flush()
+            
+            wts_batch_name = self.workdir + '/' + str(fp_batch[0,0,0]) + '_' + str(i) + '_weights.dat'
+            wts_mmap = np.memmap(wts_batch_name, dtype='<U32', mode='w+', shape=weights_batch.shape)
+            wts_mmap[:] = weights_batch[:]
+            wts_mmap.flush()
+         
+            model_in_files[model_in_batch_name] = model_in_batch.shape
+            model_out_files[model_out_batch_name] = model_out_batch.shape
+            scale_files[scale_batch_name] = scale_batch.shape
+            weights_files[wts_batch_name] = weights_batch.shape
+        
+        del fp, pad_arr
+        gc.collect()
+        
+        try:
+            os.remove(f_name)
+        except:
+            pass
+        
+        return model_in_files, model_out_files, scale_files, weights_files
+    
             
     def vocab_list(self, data):
         """
@@ -606,7 +609,7 @@ class tfr_dataset:
         test_data = data[data[self.time_index_col]<=self.test_till].groupby(self.id_col).apply(lambda x: x[-self.window_len:]).reset_index(drop=True)
         return train_data, test_data
     
-    def train_test_dataset(self, data, train_till, test_till, low_memory=True, use_memmap=True):
+    def train_test_dataset(self, data, train_till, test_till, low_memory=True):
         self.train_till = train_till
         self.test_till = test_till
         
@@ -637,12 +640,12 @@ class tfr_dataset:
                                                                        tf.TensorSpec(shape=(None, self.fh, 1), dtype=tf.float32),
                                                                        tf.TensorSpec(shape=(None, self.fh, 1), dtype=tf.float32),
                                                                        tf.TensorSpec(shape=(None, 1), dtype=tf.float32)))
-        elif (not low_memory) and use_memmap:
+        else:
             SHUFFLE_BUFFER_SIZE = int(m.ceil(train_data[self.id_col].nunique()*0.01)*self.batch)
             BATCH_SIZE = self.batch
             
-            train_x, train_y, train_z, train_w = self.static_dataset(train_data, batchsize=self.batch*max(m.ceil(train_data[self.id_col].nunique()*0.01), 200), use_memmap=use_memmap, prefix='train')
-            test_x, test_y, test_z, test_w = self.static_dataset(test_data, batchsize=self.batch*max(m.ceil(test_data[self.id_col].nunique()*0.01), 200), use_memmap=use_memmap, prefix='test')
+            train_x, train_y, train_z, train_w = self.static_dataset(train_data, batchsize=self.batch*max(m.ceil(train_data[self.id_col].nunique()*0.01), 200))
+            test_x, test_y, test_z, test_w = self.static_dataset(test_data, batchsize=self.batch*max(m.ceil(test_data[self.id_col].nunique()*0.01), 200))
                
             def train_data_generator():
                 train_datasets = []
@@ -655,6 +658,7 @@ class tfr_dataset:
                     train_datasets.append(ds)
                 return train_datasets
                 
+
             def test_data_generator():
                 test_datasets = []
                 for (k1,v1), (k2,v2), (k3,v3), (k4,v4) in zip(test_x.items(), test_y.items(), test_z.items(), test_w.items()):
@@ -676,23 +680,10 @@ class tfr_dataset:
             else:
                 trainset = tf.data.Dataset.sample_from_datasets(train_datasets).batch(BATCH_SIZE, drop_remainder=True) #num_parallel_calls=self.PARALLEL_DATA_JOBS)
                 testset = tf.data.Dataset.sample_from_datasets(test_datasets).batch(BATCH_SIZE, drop_remainder=False) #num_parallel_calls=self.PARALLEL_DATA_JOBS)
-        
-        else:
-            SHUFFLE_BUFFER_SIZE = int(m.ceil(train_data[self.id_col].nunique()*0.1)*self.batch)
-            
-            model_in_x, model_out_x, scale_x, weights_x = self.static_dataset(train_data, batchsize=self.batch*max(m.ceil(train_data[self.id_col].nunique()*0.01), 200), use_memmap=use_memmap, prefix='train')
-            model_in_y, model_out_y, scale_y, weights_y = self.static_dataset(test_data, batchsize=self.batch*max(m.ceil(test_data[self.id_col].nunique()*0.01), 200), use_memmap=use_memmap, prefix='test')
-            
-            if tf.__version__ < "2.7.0":
-                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).shuffle(SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=True).batch(self.batch, drop_remainder=True)
-                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).batch(self.batch, drop_remainder=False)
-            else:
-                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).shuffle(SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=True).batch(self.batch, drop_remainder=True, num_parallel_calls=self.PARALLEL_DATA_JOBS)
-                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).batch(self.batch, drop_remainder=False, num_parallel_calls=self.PARALLEL_DATA_JOBS)
-                
+                    
         return trainset, testset
-        
-
+    
+    
     def infer_dataset(self, data, history_till, future_till, low_memory=True):
         self.history_till = history_till
         self.future_till = future_till

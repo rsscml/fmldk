@@ -273,16 +273,18 @@ Where,
 Train: Same as Feature_Weighted_Transformer
 
 ````
-### New in v0.1.13
+### New in v0.1.15
 ````
-Added a switch 'low_memory' to the tfr_dataset.train_test_dataset method.
+Added switch 'low_memory' & 'use_memmap' to the tfr_dataset.train_test_dataset method.
 Default: low_memory = True (uses tf.data.Dataset.from_generator API for generating train/test batches). Uses less memory at the expense of speed.
-         low_memory = False, uses numpy (memmap files) arrays in tf.data.Dataset.from_tensor_slices(). Initial trainset/testset creation takes time but the training speed improves by 4x.
+         low_memory = False, uses numpy arrays in tf.data.Dataset.from_tensor_slices(). Initial trainset/testset creation takes time but the training speed improves by 4x.
+Default: use_memmap = True (uses numpy.memmap files to reduce memory usage). If False, builds train/test arrays in memory (high mem usage) 
 
 trainset, testset = data_obj.train_test_dataset(df, 
                                                train_till=pd.to_datetime('2015-12-31', format='%Y-%M-%d'), 
                                                test_till=pd.to_datetime('2016-01-31', format='%Y-%M-%d'),
-                                               low_memory=True)
+                                               low_memory=False,
+                                               use_memmap=False)
 
 ````
  

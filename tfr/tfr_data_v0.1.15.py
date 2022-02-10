@@ -28,7 +28,7 @@ class tfr_dataset:
                  window_len, 
                  fh, 
                  batch, 
-                 min_nz,
+                 min_nz, 
                  interleave=1, 
                  PARALLEL_DATA_JOBS=1, 
                  PARALLEL_DATA_JOBS_BATCHSIZE=64, 
@@ -37,7 +37,6 @@ class tfr_dataset:
         col_dict: dictionary of various column groups {id_col:'',
                                                        target_col:'',
                                                        time_index_col:'',
-                                                       datetime_format:'',
                                                        static_num_col_list:[],
                                                        static_cat_col_list:[],
                                                        temporal_known_num_col_list:[],
@@ -67,7 +66,6 @@ class tfr_dataset:
         self.id_col = self.col_dict.get('id_col', None)
         self.target_col = self.col_dict.get('target_col', None)
         self.time_index_col = self.col_dict.get('time_index_col', None)
-        self.datetime_format = self.col_dict.get('datetime_format', None)
         self.strata_col_list = self.col_dict.get('strata_col_list', [])
         self.sort_col_list = self.col_dict.get('sort_col_list', [])
         self.wt_col = self.col_dict.get('wt_col', None)
@@ -394,78 +392,6 @@ class tfr_dataset:
             model_in, model_out, scale, weights  = self.preprocess(arr, pad_arr)
             yield model_in.astype(str), model_out.astype(np.float32), scale.astype(np.float32), weights.astype(np.float32)
             
-    def fill_buffer(self, data):
-        
-        keys_dict, wts_dict = self.get_keys(data)
-        
-        # get max no. of keys 
-        if len(self.strata_col_list)>0:
-            max_keys = data.groupby(self.strata_col_list)[self.id_col].nunique().max()
-        else:
-            max_keys = data[self.id_col].nunique()
-            
-        # create arrays 
-        model_in = []
-        model_out =[]
-        scale = []
-        weights =[]
-        
-        for i in range(0, max_keys, self.batch):
-            sample_id = []
-            for k,v in keys_dict.items():
-                v = list(v)
-                if len(v) < max_keys:
-                    shortby = m.ceil(max_keys/len(v))
-                    v *= shortby        
-                sample_id += v[i:i+self.batch]
-            random.shuffle(sample_id)
-            
-            # extract rows for these sample_ids in parallel
-            df = data[self.col_list].query("{}==@sample_id".format(self.id_col))
-            arr, pad_arr = self.static_arrs(df, use_memmap=False, prefix='fill_buffer') 
-            valid_indices = np.where(np.count_nonzero(arr[:,:self.window_len-self.fh,self.target_index].astype(np.float32)>0,axis=1)>=self.min_nz)
-            arr = arr[valid_indices]
-            pad_arr = pad_arr[valid_indices]
-            m_in, m_out, s, w  = self.preprocess(arr, pad_arr)
-            
-            # add to lists
-            model_in.append(m_in)
-            model_out.append(m_out)
-            scale.append(s)
-            weights.append(w)
-            
-        model_in = np.vstack(model_in)
-        model_out = np.vstack(model_out)
-        scale = np.vstack(scale)
-        weights = np.vstack(weights)    
-        
-        '''
-        data_gen = self.data_generator(data)
-        
-        model_in = []
-        model_out =[]
-        scale = []
-        weights =[]
-        
-        obs_count = 0
-        for i, (m_in, m_out, s, w) in enumerate(data_gen):
-            obs_count += m_in.shape[0]
-            if obs_count < num_observations: 
-                model_in.append(m_in)
-                model_out.append(m_out)
-                scale.append(s)
-                weights.append(w)
-            else:
-                break
-                
-        model_in = np.vstack(model_in)
-        model_out = np.vstack(model_out)
-        scale = np.vstack(scale)
-        weights = np.vstack(weights)
-        '''
-        return model_in.astype(str), model_out.astype(np.float32), scale.astype(np.float32), weights.astype(np.float32)
-        
-            
     def static_dataset(self, data, batchsize, use_memmap, prefix='train'):
         """
         piecewise processing using np.memmap; works with arrays much larger than available memory
@@ -677,46 +603,21 @@ class tfr_dataset:
     
     def split_train_test(self, data):
         train_data = data[data[self.time_index_col]<=self.train_till].reset_index(drop=True)
-        if self.datetime_format is not None:
-            delta = max(self.train_test_timedelta, self.window_len) 
-            test_data = data[data[self.time_index_col]<=self.test_till].groupby(self.id_col).apply(lambda x: x[-delta:]).reset_index(drop=True)
-        else:
-            test_data = data[data[self.time_index_col]<=self.test_till].groupby(self.id_col).apply(lambda x: x[-self.window_len:]).reset_index(drop=True)
+        test_data = data[data[self.time_index_col]<=self.test_till].groupby(self.id_col).apply(lambda x: x[-self.window_len:]).reset_index(drop=True)
         return train_data, test_data
     
-    def train_test_dataset(self, data, train_till, test_till, low_memory=True, use_memmap=True, fill_buffer=False):
+    def train_test_dataset(self, data, train_till, test_till, low_memory=True, use_memmap=True):
+        self.train_till = train_till
+        self.test_till = test_till
         
-        if self.datetime_format is not None:
-            data[self.time_index_col] = pd.to_datetime(data[self.time_index_col], format=self.datetime_format)
-            self.train_till = pd.to_datetime(train_till, format=self.datetime_format)
-            self.test_till = pd.to_datetime(test_till, format=self.datetime_format)
-        else:
-            self.train_till = train_till
-            self.test_till = test_till
-            
         # check null
         null_status, null_cols = self.check_null(data)
         if null_status:
             print("NaN column(s): ", null_cols)
             raise ValueError("Column(s) with NaN detected!")
         
-        # sort
+        # sort & split into train, test dfs
         data = self.sort_dataset(data)
-        
-        # infer frequency
-        if self.datetime_format is not None:
-            sample_id = data[self.id_col].unique().tolist()[0]
-            freq = pd.infer_freq(data[data[self.id_col]==sample_id][self.time_index_col])
-            if freq == 'H':
-                self.train_test_timedelta = int((self.test_till - self.train_till).dt.seconds/3600)
-            elif freq == 'D':
-                self.train_test_timedelta = int((self.test_till - self.train_till).dt.days)
-            elif freq == '7D':
-                self.train_test_timedelta = int((self.test_till - self.train_till).dt.days/7)
-            elif freq == 'M':
-                self.train_test_timedelta = int(12*(self.test_till.dt.year - self.train_till.dt.year) + (self.test_till.dt.month - self.train_till.dt.month))
-        
-        # split into train, test dfs
         train_data, test_data = self.split_train_test(data)
         
         # check samples
@@ -724,7 +625,7 @@ class tfr_dataset:
         x, y, s, w = next(check_gen)
         num_features = x.shape[-1]
         
-        if low_memory and (not fill_buffer):
+        if low_memory:
             trainset = tf.data.Dataset.from_generator(lambda: self.data_generator(train_data),
                                                       output_signature=(tf.TensorSpec(shape=(None, self.window_len, num_features), dtype=tf.string),
                                                                         tf.TensorSpec(shape=(None, self.fh, 1), dtype=tf.float32),
@@ -776,7 +677,7 @@ class tfr_dataset:
                 trainset = tf.data.Dataset.sample_from_datasets(train_datasets).batch(BATCH_SIZE, drop_remainder=True) #num_parallel_calls=self.PARALLEL_DATA_JOBS)
                 testset = tf.data.Dataset.sample_from_datasets(test_datasets).batch(BATCH_SIZE, drop_remainder=False) #num_parallel_calls=self.PARALLEL_DATA_JOBS)
         
-        elif (not low_memory) and (not use_memmap):
+        else:
             SHUFFLE_BUFFER_SIZE = int(m.ceil(train_data[self.id_col].nunique()*0.1)*self.batch)
             
             model_in_x, model_out_x, scale_x, weights_x = self.static_dataset(train_data, batchsize=self.batch*max(m.ceil(train_data[self.id_col].nunique()*0.01), 200), use_memmap=use_memmap, prefix='train')
@@ -788,27 +689,7 @@ class tfr_dataset:
             else:
                 trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).shuffle(SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=True).batch(self.batch, drop_remainder=True, num_parallel_calls=self.PARALLEL_DATA_JOBS)
                 testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).batch(self.batch, drop_remainder=False, num_parallel_calls=self.PARALLEL_DATA_JOBS)
-        
-        else:
-            #avg_train_samples = max(1, int((train_data.groupby(self.id_col).size().mean() - self.window_len)/self.interleave))
-            #num_train_observations = avg_train_samples*train_data[self.id_col].nunique()
-            
-            #avg_test_samples = max(1, int((test_data.groupby(self.id_col).size().mean() - self.window_len)))
-            #num_test_observations = avg_test_samples*test_data[self.id_col].nunique()
-            
-            model_in_x, model_out_x, scale_x, weights_x = self.fill_buffer(train_data) # , num_observations=num_train_observations)
-            model_in_y, model_out_y, scale_y, weights_y = self.fill_buffer(test_data) # , num_observations=num_test_observations)
-            
-            TRAIN_SHUFFLE_BUFFER_SIZE = model_in_x.shape[0] # num_train_observations
-            TEST_SHUFFLE_BUFFER_SIZE = model_in_y.shape[0] # num_test_observations
-            
-            if tf.__version__ < "2.7.0":
-                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).shuffle(TRAIN_SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=True).batch(self.batch, drop_remainder=True)
-                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).shuffle(TEST_SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=True).batch(self.batch, drop_remainder=False)
-            else:
-                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).shuffle(TRAIN_SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=True).batch(self.batch, drop_remainder=True, num_parallel_calls=self.PARALLEL_DATA_JOBS)
-                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).shuffle(TEST_SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=True).batch(self.batch, drop_remainder=False, num_parallel_calls=self.PARALLEL_DATA_JOBS)
-         
+                
         return trainset, testset
         
 
@@ -894,6 +775,11 @@ class tfr_dataset:
         input_tensor = tf.convert_to_tensor(model_in.astype(str), dtype=tf.string)
         
         return [input_tensor, scale, id_arr, date_arr]
+
+    
+
+
+# In[ ]:
 
 
 

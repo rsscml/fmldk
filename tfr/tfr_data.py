@@ -21,7 +21,6 @@ import gc
 import math as m
 import time
 
-
 class tfr_dataset:
     def __init__(self, 
                  col_dict, 
@@ -384,19 +383,24 @@ class tfr_dataset:
 
         """
         keys_dict, wts_dict = self.get_keys(data)
+        self.train_test_batch_size = int(self.batch*len(keys_dict))
         while True:
             sample_id = self.select_ids(keys_dict, wts_dict)
             df = data.query("{}==@sample_id".format(self.id_col))
             arr, pad_arr = self.select_arrs(df)
-            valid_indices = np.where(np.count_nonzero(arr[:,:self.window_len-self.fh,self.target_index].astype(np.float32)>0,axis=1)>=self.min_nz)
-            arr = arr[valid_indices]
-            pad_arr = pad_arr[valid_indices]
+            
+            # -- done for @tf.function retracing reason. May revisit later
+            #valid_indices = np.where(np.count_nonzero(arr[:,:self.window_len-self.fh,self.target_index].astype(np.float32)>0,axis=1)>=self.min_nz)
+            #arr = arr[valid_indices]
+            #pad_arr = pad_arr[valid_indices]
+            
             model_in, model_out, scale, weights  = self.preprocess(arr, pad_arr)
             yield model_in.astype(str), model_out.astype(np.float32), scale.astype(np.float32), weights.astype(np.float32)
             
     def fill_buffer(self, data):
         
         keys_dict, wts_dict = self.get_keys(data)
+        self.train_test_batch_size = int(self.batch*len(keys_dict))
         
         # get max no. of keys 
         if len(self.strata_col_list)>0:
@@ -803,11 +807,11 @@ class tfr_dataset:
             TEST_SHUFFLE_BUFFER_SIZE = model_in_y.shape[0] # num_test_observations
             
             if tf.__version__ < "2.7.0":
-                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).shuffle(TRAIN_SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=True).batch(self.batch, drop_remainder=True)
-                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).shuffle(TEST_SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=True).batch(self.batch, drop_remainder=False)
+                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).shuffle(TRAIN_SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=True).batch(self.train_test_batch_size, drop_remainder=True)
+                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).shuffle(TEST_SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=True).batch(self.train_test_batch_size, drop_remainder=False)
             else:
-                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).shuffle(TRAIN_SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=True).batch(self.batch, drop_remainder=True, num_parallel_calls=self.PARALLEL_DATA_JOBS)
-                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).shuffle(TEST_SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=True).batch(self.batch, drop_remainder=False, num_parallel_calls=self.PARALLEL_DATA_JOBS)
+                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).shuffle(TRAIN_SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=True).batch(self.train_test_batch_size, drop_remainder=True, num_parallel_calls=self.PARALLEL_DATA_JOBS)
+                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).shuffle(TEST_SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=True).batch(self.train_test_batch_size, drop_remainder=False, num_parallel_calls=self.PARALLEL_DATA_JOBS)
          
         return trainset, testset
         
@@ -894,6 +898,7 @@ class tfr_dataset:
         input_tensor = tf.convert_to_tensor(model_in.astype(str), dtype=tf.string)
         
         return [input_tensor, scale, id_arr, date_arr]
+
 
 
 

@@ -287,4 +287,14 @@ trainset, testset = data_obj.train_test_dataset(df,
                                                use_memmap=False)
 
 ````
- 
+ ### Added TS Visualization & fixed charset handling to 'utf-8'
+````
+Plot sample raw time-series:
+
+data_obj.show_ts_samples(data=df, sample_ids=[], n_samples=10, n_col=2, plot_size=(300,600), save=False, filename='ts_samples.html')
+
+Plot sample processed time-series:
+
+data_obj.show_processed_ts_samples(data=df, n_samples=10, n_col=2, plot_size=(300,400))
+
+````

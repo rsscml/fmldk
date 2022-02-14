@@ -1,6 +1,9 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+# In[1]:
+
+
 import tensorflow as tf
 import tensorflow_probability as tfp
 tfd = tfp.distributions
@@ -17,13 +20,6 @@ import re
 import gc
 import math as m
 import time
-# visualization imports
-from bokeh.plotting import figure, output_file, show, output_notebook
-from bokeh.models import ColumnDataSource, HoverTool, Div, FactorRange
-from bokeh.layouts import gridplot, column, row
-from bokeh.palettes import Category10, Category20, Colorblind
-from bokeh.io import reset_output
-from bokeh.models.ranges import DataRange1d
 
 class tfr_dataset:
     def __init__(self, 
@@ -902,160 +898,7 @@ class tfr_dataset:
         input_tensor = tf.convert_to_tensor(model_in.astype(str), dtype=tf.string)
         
         return [input_tensor, scale, id_arr, date_arr]
-    
-    def show_ts_samples(self, data, sample_ids=[], n_samples=10, n_col=2, plot_size=(300,600), save=False, filename='ts_samples.html'):
-        
-        # sort dataset
-        data = self.sort_dataset(data)
-        
-        num_covar_cols = self.col_dict.get('temporal_known_num_col_list') + self.col_dict.get('temporal_unknown_num_col_list')
-        cat_covar_cols = self.col_dict.get('temporal_known_cat_col_list') + self.col_dict.get('temporal_unknown_cat_col_list')
-        target_col = self.col_dict.get('target_col')
-        id_col = self.col_dict.get('id_col')
-        date_col = self.col_dict.get('time_index_col')
-        
-        # bokeh initialization
-        reset_output()
-        output_notebook()
-        TOOLS = "box_select,lasso_select,xpan,reset,save"
-        h,w = plot_size
-        
-        if save:
-            output_file(filename)
-        
-        if len(sample_ids) == 0:    
-            # randomly sample from id_cols
-            keys_dict, wts_dict = self.get_keys(data)
-            sample_ids = []
-            for k,v in keys_dict.items():
-                ids = list(np.random.choice(v, size=n_samples))
-                sample_ids += ids
-        else:
-            # use provided ids for sampling
-            pass
-        
-        assert len(sample_ids) > 0,  "At least one Key required!"
-        
-        saveplots = []
-        for sid in sample_ids:
-            df_sample = data[data[id_col]==sid]
-            df_sample = df_sample.reset_index()
-            df_sample = df_sample[[target_col, date_col] + num_covar_cols + cat_covar_cols]
-            df_sample[date_col] = df_sample[date_col].astype(str)
-            num_cols = [target_col] + num_covar_cols
-            num_columns = len(num_cols)
-            source = ColumnDataSource(data=df_sample)
-            plots = []
-            for col in num_cols:
-                y_vals = df_sample[col].unique().tolist()
-                p = figure( plot_height=h, plot_width=w, tools=TOOLS, x_axis_label='timestep', y_axis_label=col, title = "{}_{}".format(sid,col))
-                p.line(x='index', y=col, source=source)
-                tooltips = [(col,'@{}'.format(col)), (date_col,'@{}'.format(date_col))]
-                p.add_tools(HoverTool(tooltips=tooltips))
-                plots.append(p)
-    
-            for i in range(len(plots)):
-                if i==0:
-                    pass
-                else:
-                    plots[i].x_range = plots[i-1].x_range
-        
-            subplots = [plots[i:i + n_col] for i in range(0, len(plots), n_col)]
-            saveplots += subplots
-           
-            if len(cat_covar_cols)>0:
-                plots = []
-                for col in cat_covar_cols:
-                    df_cat = df_sample.groupby(col).agg({target_col:'mean'}).reset_index()
-                    source = ColumnDataSource(data=df_cat)
-                    p = figure(x_range=df_cat[col].astype(str).unique(), plot_height=h, plot_width=w, tools=TOOLS, x_axis_label='timestep', y_axis_label=col, title = "{}_{}".format(sid,col))
-                    p.vbar(x=col, top=target_col, source=source, width=0.8)
-                    tooltips = [(col,'@{}'.format(col)),(target_col,'@{}'.format(target_col))]
-                    p.add_tools(HoverTool(tooltips=tooltips))
-                    plots.append(p)
-        
-                subplots = [plots[i:i + n_col] for i in range(0, len(plots), n_col)]
-                saveplots += subplots
-                html = """<h3>{}: Time Series Plots with Numerical Covariates, Mean by Categorical Covariates</h3>""".format(target_col)
-                sup_title = Div(text=html)    
-            else:
-                html = """<h3>{}: Time Series Plots with Numerical Covariates</h3>""".format(target_col)
-                sup_title = Div(text=html)
-        
-        grid = gridplot(saveplots)
-        show(column(sup_title, grid))
-        
-    def show_processed_ts_samples(self, data, n_samples=10, n_col=2, plot_size=(300,400)):
-        # sort
-        data = self.sort_dataset(data)
-        
-        # Obtain col names & col positions in the input tensor
-        target_col_name, target_index = self.col_index_dict.get('target_index')
-        stat_cat_col_names, stat_cat_indices = self.col_index_dict.get('static_cat_indices')
-        known_num_col_names, known_num_indices = self.col_index_dict.get('temporal_known_num_indices')
-        unknown_num_col_names, unknown_num_indices = self.col_index_dict.get('temporal_unknown_num_indices')
-    
-        # get samples
-        sample_gen = self.data_generator(data)
-        x, y, s, w = next(sample_gen)
-        
-        # bokeh initialization
-        reset_output()
-        output_notebook()
-        TOOLS = "box_select,lasso_select,xpan,reset,save"
-        h,w = plot_size
-        x_range = np.arange(self.window_len).tolist() 
-        
-        # display sample series
-        for i in range(len(x)):
-            
-            if i >= n_samples:
-                    break
-                    
-            sid = str(x[i,-1,0])             # shape: [timsteps, features]
-            scale = str(s[i,-1,0])
-            target = x[i,:,1].tolist()
-            mask = x[i,:,-1].tolist()
-            
-            # static cat columns
-            stat_cat_cols = []
-            stat_cat_cols.append(sid)
-            stat_cat_cols.append(scale)
-            if len(stat_cat_indices)>0:
-                for col, k in zip(stat_cat_col_names, stat_cat_indices):
-                    stat_cat_cols.append(str(x[i,-1,k]))
-                    
-            # temporal num columns
-            temp_num_cols = []
-            temp_num_cols.append(target)
-            temp_num_cols.append(mask)
-            if len(known_num_indices + unknown_num_indices)>0:
-                for col, k in zip(known_num_col_names + unknown_num_col_names, known_num_indices + unknown_num_indices):
-                    temp_num_cols.append(x[i,:,k].tolist())
-            
-            num_col_names = [self.target_col] + ['mask'] + known_num_col_names + unknown_num_col_names
-            stat_val = '_'.join(stat_cat_cols)
-            
-            plots = []
-            for j, col in enumerate(num_col_names):
-                p = figure(plot_height=h, plot_width=w, tools=TOOLS, x_axis_label='timestep', y_axis_label=col, title = "{}".format(stat_val))
-                p.line(x=x_range, y=temp_num_cols[j])
-                tooltips = [(col,'@{}'.format(col))]
-                p.add_tools(HoverTool(tooltips=tooltips))
-                plots.append(p)
-    
-            for i in range(len(plots)):
-                if i==0:
-                    pass
-                else:
-                    plots[i].x_range = plots[i-1].x_range
-        
-            subplots = [plots[i:i + n_col] for i in range(0, len(plots), n_col)]
-            html = """<h3>{}: Scaled Time Series Plots (Numerical Columns)</h3>""".format(sid)
-            sup_title = Div(text=html)
-            grid = gridplot(subplots)
-            show(column(sup_title, grid))
-            i += 1
+
 
 
 

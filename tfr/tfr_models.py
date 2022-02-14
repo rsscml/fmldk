@@ -1081,7 +1081,9 @@ def Transformer_Train(model,
                       patience,
                       weighted_training,
                       model_prefix,
-                      logdir):
+                      logdir,
+                      opt=None,
+                      clipnorm=None):
     """
      train_dataset, test_dataset: tf.data.Dataset iterator for train & test datasets 
      loss_type: One of ['Point','Quantile','Normal','Poisson','Negbin']
@@ -1093,7 +1095,8 @@ def Transformer_Train(model,
      weighted_training: True/False
      model_prefix: relative or absolute model path with a prefix for a model name
      logdir: tensorflow training logs for tensorboard
-        
+     opt: non-default tf optimizer
+     clipnorm: global clipnorm value
     """
 
     @tf.function
@@ -1146,8 +1149,17 @@ def Transformer_Train(model,
         return loss, o
        
     # training specific vars
-    optimizer = tf.keras.optimizers.Nadam(learning_rate=learning_rate)
-        
+    if opt is None:
+        optimizer = tf.keras.optimizers.Nadam(learning_rate=learning_rate)
+    else:
+        optimizer = opt
+        optimizer.learning_rate = learning_rate
+
+    if clipnorm is None:
+        pass
+    else:
+        optimizer.global_clipnorm = clipnorm
+
     # model loss & metric
     train_loss_avg = tf.keras.metrics.Mean('train_loss', dtype=tf.float32)
     test_loss_avg = tf.keras.metrics.Mean('test_loss', dtype=tf.float32)
@@ -1306,12 +1318,11 @@ def Transformer_Infer(model, inputs, loss_type, hist_len, f_len, target_index):
         elif loss_type in ['Point','Quantile']:
             out = out.numpy()
             output.append(out[:,i:i+1,0])
-            print("iter: {}, output 1st: {}".format(i, out[0]))
             infer_arr = infer_tensor.numpy()
             infer_arr[:,hist_len:hist_len+i+1,target_index] = out[:,0:i+1,0]
             
         # feedback updated hist + fh tensor
-        infer_tensor = tf.convert_to_tensor(infer_arr.astype(str), dtype=tf.string)
+        infer_tensor = tf.convert_to_tensor(np.char.decode(infer_arr.astype(np.bytes_), 'UTF-8'), dtype=tf.string)
             
     output_arr = np.concatenate(output, axis=1) 
         
@@ -1357,12 +1368,11 @@ def Transformer_Infer_Piecewise(model, inputs, loss_type, hist_len, f_len, targe
             elif loss_type in ['Point','Quantile']:
                 out = out.numpy()
                 output.append(out[:,i:i+1,0])
-                print("iter: {}, output 1st: {}".format(i, out[0]))
                 infer_arr = infer_tensor_chunk.numpy()
                 infer_arr[:,hist_len:hist_len+i+1,target_index] = out[:,0:i+1,0]
             
             # feedback updated hist + fh tensor
-            infer_tensor_chunk = tf.convert_to_tensor(infer_arr.astype(str), dtype=tf.string)
+            infer_tensor_chunk = tf.convert_to_tensor(np.char.decode(infer_arr.astype(np.bytes_), 'UTF-8'), dtype=tf.string)
             
         output_arr = np.concatenate(output, axis=1) 
         
@@ -1436,7 +1446,9 @@ class Simple_Transformer:
               patience,
               weighted_training,
               model_prefix,
-              logdir):
+              logdir,
+              opt=None,
+              clipnorm=None):
         
         # Initialize Weights
         for x,y,s,w in train_dataset.take(1):
@@ -1456,7 +1468,9 @@ class Simple_Transformer:
                                        patience,
                                        weighted_training,
                                        model_prefix,
-                                       logdir)
+                                       logdir,
+                                       opt,
+                                       clipnorm)
         return best_model
     
     def load(self, model_path):
@@ -1763,7 +1777,9 @@ def VarTransformer_Train(model,
                       patience,
                       weighted_training,
                       model_prefix,
-                      logdir):
+                      logdir,
+                      opt=None,
+                      clipnorm=None):
     """
      train_dataset, test_dataset: tf.data.Dataset iterator for train & test datasets 
      loss_type: One of ['Point','Quantile','Normal','Poisson','Negbin']
@@ -1775,7 +1791,8 @@ def VarTransformer_Train(model,
      weighted_training: True/False
      model_prefix: relative or absolute model path with a prefix for a model name
      logdir: tensorflow training logs for tensorboard
-        
+     opt: non-default tf optimizer
+     clipnorm: global clipping norm
     """
 
     @tf.function
@@ -1828,8 +1845,17 @@ def VarTransformer_Train(model,
         return loss, o
        
     # training specific vars
-    optimizer = tf.keras.optimizers.Nadam(learning_rate=learning_rate)
-        
+    if opt is None:
+        optimizer = tf.keras.optimizers.Nadam(learning_rate=learning_rate)
+    else:
+        optimizer = opt
+        optimizer.learning_rate = learning_rate
+
+    if clipnorm is None:
+        pass
+    else:
+        optimizer.global_clipnorm = clipnorm
+
     # model loss & metric
     train_loss_avg = tf.keras.metrics.Mean('train_loss', dtype=tf.float32)
     test_loss_avg = tf.keras.metrics.Mean('test_loss', dtype=tf.float32)
@@ -1997,7 +2023,7 @@ def VarTransformer_Infer(model, inputs, loss_type, hist_len, f_len, target_index
             infer_arr[:,hist_len:hist_len+i+1,target_index] = out[:,0:i+1,0]
             
         # feedback updated hist + fh tensor
-        infer_tensor = tf.convert_to_tensor(infer_arr.astype(str), dtype=tf.string)
+        infer_tensor = tf.convert_to_tensor(np.char.decode(infer_arr.astype(np.bytes_), 'UTF-8'), dtype=tf.string)
             
         if i == (f_len - 1):
             column_names_list, wts_list = feature_wts
@@ -2086,7 +2112,7 @@ def VarTransformer_Infer_Piecewise(model, inputs, loss_type, hist_len, f_len, ta
                 infer_arr[:,hist_len:hist_len+i+1,target_index] = out[:,0:i+1,0]
             
             # feedback updated hist + fh tensor
-            infer_tensor_chunk = tf.convert_to_tensor(infer_arr.astype(str), dtype=tf.string)
+            infer_tensor_chunk = tf.convert_to_tensor(np.char.decode(infer_arr.astype(np.bytes_), 'UTF-8'), dtype=tf.string)
             
             if i == (f_len - 1):
                 column_names_list, wts_list = feature_wts
@@ -2197,7 +2223,9 @@ class Feature_Weighted_Transformer:
               patience,
               weighted_training,
               model_prefix,
-              logdir):
+              logdir,
+              opt=None,
+              clipnorm=None):
         
         # Initialize Weights
         for x,y,s,w in train_dataset.take(1):
@@ -2217,7 +2245,9 @@ class Feature_Weighted_Transformer:
                                           patience,
                                           weighted_training,
                                           model_prefix,
-                                          logdir)
+                                          logdir,
+                                          opt,
+                                          clipnorm)
         return best_model
     
     def load(self, model_path):

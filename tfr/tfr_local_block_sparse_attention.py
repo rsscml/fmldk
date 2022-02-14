@@ -521,10 +521,6 @@ class temporal_variable_selection_layer(tf.keras.layers.Layer):
         return tfr_input, dynamic_weights
       
 
-
-# In[ ]:
-
-
 # Variable Weighted Transformer Model
 
 class SparseVarTransformer(tf.keras.Model):
@@ -646,8 +642,6 @@ class SparseVarTransformer(tf.keras.Model):
         else:
             return out, parameters, static_weights, encoder_weights, decoder_weights
 
-
-# In[ ]:
 
 
 # SparseVarTransformer Wrapper
@@ -926,7 +920,9 @@ def SparseVarTransformer_Train(model,
                                patience,
                                weighted_training,
                                model_prefix,
-                               logdir):
+                               logdir,
+                               opt=None,
+                               clipnorm=None):
     """
      train_dataset, test_dataset: tf.data.Dataset iterator for train & test datasets 
      loss_type: One of ['Point','Quantile','Normal','Poisson','Negbin']
@@ -991,8 +987,17 @@ def SparseVarTransformer_Train(model,
         return loss, o
        
     # training specific vars
-    optimizer = tf.keras.optimizers.Nadam(learning_rate=learning_rate)
-        
+    if opt is None:
+        optimizer = tf.keras.optimizers.Nadam(learning_rate=learning_rate)
+    else:
+        optimizer = opt
+        optimizer.learning_rate = learning_rate
+
+    if clipnorm is None:
+        pass
+    else:
+        optimizer.global_clipnorm = clipnorm
+
     # model loss & metric
     train_loss_avg = tf.keras.metrics.Mean('train_loss', dtype=tf.float32)
     test_loss_avg = tf.keras.metrics.Mean('test_loss', dtype=tf.float32)
@@ -1161,7 +1166,7 @@ def SparseVarTransformer_Infer(model, inputs, loss_type, hist_len, f_len, target
             infer_arr[:,hist_len:hist_len+i+1,target_index] = out[:,0:i+1,0]
             
         # feedback updated hist + fh tensor
-        infer_tensor = tf.convert_to_tensor(infer_arr.astype(str), dtype=tf.string)
+        infer_tensor = tf.convert_to_tensor(np.char.decode(infer_arr.astype(np.bytes_),'UTF-8'), dtype=tf.string)
             
         if i == (f_len - 1):
             column_names_list, wts_list = feature_wts
@@ -1250,7 +1255,7 @@ def SparseVarTransformer_Infer_Piecewise(model, inputs, loss_type, hist_len, f_l
                 infer_arr[:,hist_len:hist_len+i+1,target_index] = out[:,0:i+1,0]
             
             # feedback updated hist + fh tensor
-            infer_tensor_chunk = tf.convert_to_tensor(infer_arr.astype(str), dtype=tf.string)
+            infer_tensor_chunk = tf.convert_to_tensor(np.char.decode(infer_arr.astype(np.bytes_),'UTF-8'), dtype=tf.string)
             
             if i == (f_len - 1):
                 column_names_list, wts_list = feature_wts
@@ -1310,9 +1315,6 @@ def SparseVarTransformer_Infer_Piecewise(model, inputs, loss_type, hist_len, f_l
     return forecast_df, stat_wts_df, encoder_wts_df, decoder_wts_df
 
 
-# In[ ]:
-
-
 class Sparse_Feature_Weighted_Transformer:
     def __init__(self, 
                  col_index_dict,
@@ -1367,7 +1369,9 @@ class Sparse_Feature_Weighted_Transformer:
               patience,
               weighted_training,
               model_prefix,
-              logdir):
+              logdir,
+              opt=None,
+              clipnorm=None):
         
         # Initialize Weights
         for x,y,s,w in train_dataset.take(1):
@@ -1387,7 +1391,9 @@ class Sparse_Feature_Weighted_Transformer:
                                                 patience,
                                                 weighted_training,
                                                 model_prefix,
-                                                logdir)
+                                                logdir,
+                                                opt,
+                                                clipnorm)
         return best_model
     
     def load(self, model_path):
@@ -1419,10 +1425,6 @@ class Sparse_Feature_Weighted_Transformer:
         
         return results_df
     
-
-
-# In[ ]:
-
 
 # Transformer Base Model
 
@@ -1515,9 +1517,6 @@ class SparseTransformer(tf.keras.Model):
             return out, scale
         else:
             return out, parameters
-
-
-# In[ ]:
 
 
 # SparseTransformer Wrapper
@@ -1750,7 +1749,9 @@ def SparseTransformer_Train(model,
                       patience,
                       weighted_training,
                       model_prefix,
-                      logdir):
+                      logdir,
+                      opt=None,
+                      clipnorm=None):
     """
      train_dataset, test_dataset: tf.data.Dataset iterator for train & test datasets 
      loss_type: One of ['Point','Quantile','Normal','Poisson','Negbin']
@@ -1815,8 +1816,17 @@ def SparseTransformer_Train(model,
         return loss, o
        
     # training specific vars
-    optimizer = tf.keras.optimizers.Nadam(learning_rate=learning_rate)
-        
+    if opt is None:
+        optimizer = tf.keras.optimizers.Nadam(learning_rate=learning_rate)
+    else:
+        optimizer = opt
+        optimizer.learning_rate = learning_rate
+
+    if clipnorm is None:
+        pass
+    else:
+        optimizer.global_clipnorm = clipnorm
+
     # model loss & metric
     train_loss_avg = tf.keras.metrics.Mean('train_loss', dtype=tf.float32)
     test_loss_avg = tf.keras.metrics.Mean('test_loss', dtype=tf.float32)
@@ -1981,7 +1991,7 @@ def SparseTransformer_Infer(model, inputs, loss_type, hist_len, f_len, target_in
             infer_arr[:,hist_len:hist_len+i+1,target_index] = out[:,0:i+1,0]
             
         # feedback updated hist + fh tensor
-        infer_tensor = tf.convert_to_tensor(infer_arr.astype(str), dtype=tf.string)
+        infer_tensor = tf.convert_to_tensor(np.char.decode(infer_arr.astype(np.bytes_),'UTF-8'), dtype=tf.string)
             
     output_arr = np.concatenate(output, axis=1) 
         
@@ -2033,7 +2043,7 @@ def SparseTransformer_Infer_Piecewise(model, inputs, loss_type, hist_len, f_len,
                 infer_arr[:,hist_len:hist_len+i+1,target_index] = out[:,0:i+1,0]
             
             # feedback updated hist + fh tensor
-            infer_tensor_chunk = tf.convert_to_tensor(infer_arr.astype(str), dtype=tf.string)
+            infer_tensor_chunk = tf.convert_to_tensor(np.char.decode(infer_arr.astype(np.bytes_),'UTF-8'), dtype=tf.string)
             
         output_arr = np.concatenate(output, axis=1) 
         
@@ -2054,9 +2064,6 @@ def SparseTransformer_Infer_Piecewise(model, inputs, loss_type, hist_len, f_len,
     forecast_df = pd.concat(forecast_df_list, axis=0)    
         
     return forecast_df
-
-
-# In[ ]:
 
 
 class Sparse_Simple_Transformer:
@@ -2113,7 +2120,9 @@ class Sparse_Simple_Transformer:
               patience,
               weighted_training,
               model_prefix,
-              logdir):
+              logdir,
+              opt=None,
+              clipnorm=None):
         
         # Initialize Weights
         for x,y,s,w in train_dataset.take(1):
@@ -2133,7 +2142,9 @@ class Sparse_Simple_Transformer:
                                        patience,
                                        weighted_training,
                                        model_prefix,
-                                       logdir)
+                                       logdir,
+                                       opt,
+                                       clipnorm)
         return best_model
     
     def load(self, model_path):

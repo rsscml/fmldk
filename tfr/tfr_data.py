@@ -18,7 +18,7 @@ import gc
 import math as m
 import time
 # visualization imports
-from bokeh.plotting import figure, output_file, show, output_notebook
+from bokeh.plotting import figure, output_file, show, output_notebook, save
 from bokeh.models import ColumnDataSource, HoverTool, Div, FactorRange
 from bokeh.layouts import gridplot, column, row
 from bokeh.palettes import Category10, Category20, Colorblind
@@ -985,7 +985,7 @@ class tfr_dataset:
         grid = gridplot(saveplots)
         show(column(sup_title, grid))
         
-    def show_processed_ts_samples(self, data, n_samples=10, n_col=2, plot_size=(300,400)):
+    def show_processed_ts_samples(self, data, n_samples=10, n_col=2, plot_size=(300,400), save=True, filename='processed_ts_samples.html'):
         # sort
         data = self.sort_dataset(data)
         
@@ -1004,9 +1004,12 @@ class tfr_dataset:
         output_notebook()
         TOOLS = "box_select,lasso_select,xpan,reset,save"
         h,w = plot_size
-        x_range = np.arange(self.window_len).tolist() 
-        
+        x_range = np.arange(self.window_len).tolist()
+        if save:
+            output_file(filename)
+
         # display sample series
+        layouts = []
         for i in range(len(x)):
             
             if i >= n_samples:
@@ -1054,8 +1057,11 @@ class tfr_dataset:
             html = """<h3>{}: Scaled Time Series Plots (Numerical Columns)</h3>""".format(sid)
             sup_title = Div(text=html)
             grid = gridplot(subplots)
-            show(column(sup_title, grid))
+            layout = column(sup_title, grid, sizing_mode="stretch_both")
+            layouts.append(layout)
             i += 1
+        supergrid = gridplot(layouts, ncols=1)
+        show(supergrid)
 
 
 

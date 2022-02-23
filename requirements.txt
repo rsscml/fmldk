@@ -5,3 +5,6 @@ tensorflow_probability
 joblib
 pathlib
 bokeh
+holoviews
+hvplot
+ennemi

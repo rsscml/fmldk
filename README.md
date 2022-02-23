@@ -298,3 +298,21 @@ Plot sample processed time-series:
 data_obj.show_processed_ts_samples(data=df, n_samples=10, n_col=2, plot_size=(300,400))
 
 ````
+
+### New in 0.1.18 - EDA package
+````
+Create Interactive EDA Report
+
+import eda
+
+eda_object = eda.eda(col_dict=columns_dict)  # 'columns_dict' -- similar to the one used in 'tfr_dataset'
+eda_object.create_report(data=df, filename='eda_report.html') # df is the pandas dataframe, filename is the full path of the to-be generated report
+
+The create_report method takes a few more arguments:
+
+n_col (default (int): 2) # Configures the grid layout 
+plot_size (default (tuple of ints): (400,800)) # (Height,Width) of the plot in pixels
+time_lags (default (list of ints): [-1,0,1]) # Used for non-linear correlation density plots between target_col & various numeric & categorical columns for specified lags.
+max_static_col_levels (default (int): 100) # If there are too many levels to a static feature, the report can get crowded with redundant plots. This parameter helps skip crowded plots with little utility.
+````
+

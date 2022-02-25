@@ -1004,7 +1004,7 @@ class dl_dataset:
                 for col in cat_covar_cols:
                     df_cat = df_sample.groupby(col).agg({target_col:'mean'}).reset_index()
                     source = ColumnDataSource(data=df_cat)
-                    p = figure(x_range=df_cat[col].astype(str).unique(), plot_height=h, plot_width=w, tools=TOOLS, x_axis_label='timestep', y_axis_label=col, title = "{}_{}".format(sid,col))
+                    p = figure(x_range=df_cat[col].astype(str).unique(), plot_height=h, plot_width=w, tools=TOOLS, x_axis_label=col, y_axis_label='Mean ' + str(target_col), title = "{} {}".format(sid,col))
                     p.vbar(x=col, top=target_col, source=source, width=0.8)
                     p.xaxis.major_label_orientation = "vertical"
                     tooltips = [(col,'@{}'.format(col)),(target_col,'@{}'.format(target_col))]

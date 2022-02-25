@@ -291,11 +291,11 @@ trainset, testset = data_obj.train_test_dataset(df,
 ````
 Plot sample raw time-series:
 
-data_obj.show_ts_samples(data=df, sample_ids=[], n_samples=10, n_col=2, plot_size=(300,600), save=False, filename='ts_samples.html')
+data_obj.show_ts_samples(data=df, sample_ids=[], n_samples=10, n_col=2, plot_size=(300,600), save=True, filename='ts_samples.html')
 
 Plot sample processed time-series:
 
-data_obj.show_processed_ts_samples(data=df, n_samples=10, n_col=2, plot_size=(300,400))
+data_obj.show_processed_ts_samples(data=df, n_samples=10, n_col=2, plot_size=(300,400), save=True, filename='ts_processed_samples.html')
 
 ````
 
@@ -314,5 +314,6 @@ n_col (default (int): 2) # Configures the grid layout
 plot_size (default (tuple of ints): (400,800)) # (Height,Width) of the plot in pixels
 time_lags (default (list of ints): [-1,0,1]) # Used for non-linear correlation density plots between target_col & various numeric & categorical columns for specified lags.
 max_static_col_levels (default (int): 100) # If there are too many levels to a static feature, the report can get crowded with redundant plots. This parameter helps skip crowded plots with little utility.
+
 ````
 

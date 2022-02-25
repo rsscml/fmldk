@@ -17,7 +17,6 @@ import re
 import gc
 import math as m
 import time
-
 # visualization imports
 from bokeh.plotting import figure, output_file, show, output_notebook, save
 from bokeh.models import ColumnDataSource, HoverTool, Div, FactorRange
@@ -26,7 +25,7 @@ from bokeh.palettes import Category10, Category20, Colorblind
 from bokeh.io import reset_output
 from bokeh.models.ranges import DataRange1d
 
-class dl_dataset:
+class tfr_dataset:
     def __init__(self, 
                  col_dict, 
                  window_len, 
@@ -904,28 +903,7 @@ class dl_dataset:
         
         return [input_tensor, scale, id_arr, date_arr]
     
-    def acf(self, series):
-        # https://stackoverflow.com/questions/43344406/is-there-a-bokeh-version-of-pandas-autocorrelation-plot-method
-        n = len(series)
-        data = np.asarray(series)
-        mean = np.mean(data)
-        c0 = np.sum((data - mean) ** 2) / float(n)
-        def r(h):
-            acf_lag = ((data[:n - h] - mean) * (data[h:] - mean)).sum() / float(n) / c0
-            return round(acf_lag, 3)
-        x = np.arange(n) # Avoiding lag 0 calculation
-        acf_coeffs = pd.Series(map(r, x)).round(decimals = 3)
-        acf_coeffs = acf_coeffs + 0
-        return acf_coeffs
-
-    def significance(self, series):
-        # https://stackoverflow.com/questions/43344406/is-there-a-bokeh-version-of-pandas-autocorrelation-plot-method
-        n = len(series)
-        z95 = 1.959963984540054 / np.sqrt(n)
-        z99 = 2.5758293035489004 / np.sqrt(n)
-        return (z95,z99)
-    
-    def show_ts_samples(self, data, sample_ids=[], n_samples=10, n_col=2, plot_size=(300,600), save=True, filename='ts_samples.html'):
+    def show_ts_samples(self, data, sample_ids=[], n_samples=10, n_col=2, plot_size=(300,600), save=False, filename='ts_samples.html'):
         
         # sort dataset
         data = self.sort_dataset(data)
@@ -970,25 +948,11 @@ class dl_dataset:
             plots = []
             for col in num_cols:
                 y_vals = df_sample[col].unique().tolist()
-                p = figure( plot_height=h, plot_width=w, tools=TOOLS, x_axis_label='timestep', y_axis_label=col, title = "{} {}".format(sid,col))
+                p = figure( plot_height=h, plot_width=w, tools=TOOLS, x_axis_label='timestep', y_axis_label=col, title = "{}_{}".format(sid,col))
                 p.line(x='index', y=col, source=source)
                 tooltips = [(col,'@{}'.format(col)), (date_col,'@{}'.format(date_col))]
                 p.add_tools(HoverTool(tooltips=tooltips))
                 plots.append(p)
-            
-            # autocorr plot
-            series = df_sample[target_col]
-            x = pd.Series(range(1, len(series)+1), dtype = float)
-            z95, z99 = self.significance(series)
-            y = self.acf(series)
-            p = figure(title="{} Auto-Correlation Plot".format(sid), plot_height=h, plot_width=w, x_axis_label="Lag", y_axis_label="Autocorrelation")
-            p.line(x, z99, line_dash='dashed', line_color='grey')
-            p.line(x, z95, line_color = 'grey')
-            p.line(x, y=0.0, line_color='black')
-            p.line(x, z99*-1, line_dash='dashed', line_color='grey')
-            p.line(x, z95*-1, line_color = 'grey')
-            p.line(x, y, line_width=2)
-            plots.append(p)
     
             for i in range(len(plots)):
                 if i==0:
@@ -998,7 +962,7 @@ class dl_dataset:
         
             subplots = [plots[i:i + n_col] for i in range(0, len(plots), n_col)]
             saveplots += subplots
-            
+           
             if len(cat_covar_cols)>0:
                 plots = []
                 for col in cat_covar_cols:
@@ -1006,7 +970,6 @@ class dl_dataset:
                     source = ColumnDataSource(data=df_cat)
                     p = figure(x_range=df_cat[col].astype(str).unique(), plot_height=h, plot_width=w, tools=TOOLS, x_axis_label='timestep', y_axis_label=col, title = "{}_{}".format(sid,col))
                     p.vbar(x=col, top=target_col, source=source, width=0.8)
-                    p.xaxis.major_label_orientation = "vertical"
                     tooltips = [(col,'@{}'.format(col)),(target_col,'@{}'.format(target_col))]
                     p.add_tools(HoverTool(tooltips=tooltips))
                     plots.append(p)
@@ -1018,7 +981,7 @@ class dl_dataset:
             else:
                 html = """<h3>{}: Time Series Plots with Numerical Covariates</h3>""".format(target_col)
                 sup_title = Div(text=html)
-                
+        
         grid = gridplot(saveplots)
         show(column(sup_title, grid))
         
@@ -1041,11 +1004,10 @@ class dl_dataset:
         output_notebook()
         TOOLS = "box_select,lasso_select,xpan,reset,save"
         h,w = plot_size
-        x_range = np.arange(self.window_len).tolist() 
-        
+        x_range = np.arange(self.window_len).tolist()
         if save:
             output_file(filename)
-            
+
         # display sample series
         layouts = []
         for i in range(len(x)):
@@ -1098,7 +1060,6 @@ class dl_dataset:
             layout = column(sup_title, grid, sizing_mode="stretch_both")
             layouts.append(layout)
             i += 1
-        
         supergrid = gridplot(layouts, ncols=1)
         show(supergrid)
 

@@ -16,8 +16,6 @@ import gc
 import math as m
 import time
 import scipy
-import warnings
-warnings.filterwarnings("ignore")
 
 # bokeh imports
 from bokeh.plotting import figure, output_file, show, output_notebook, save
@@ -56,7 +54,6 @@ class eda:
 
         """
         self.col_dict = col_dict
-        
         # extract columnsets from col_dict
         self.id_col = self.col_dict.get('id_col', None)
         self.target_col = self.col_dict.get('target_col', None)
@@ -272,7 +269,7 @@ class eda:
         # CoV volume plot
         plots = []
         for stat_col in stat_cols:
-                title = 'Volume by CoV by ' + stat_col
+                title = 'Volume by CoV by' + stat_col
                 df_stat = data.groupby([stat_col,id_col]).agg({target_col:['sum','mean','median','std']})
                 df_stat = df_stat.droplevel(0, axis=1).reset_index()
                 df_stat['cov'] = df_stat['std']/df_stat['mean']
@@ -331,33 +328,24 @@ class eda:
         temp_num_cols = self.temporal_known_num_col_list + self.temporal_unknown_num_col_list
         temp_cat_cols = self.temporal_known_cat_col_list + self.temporal_unknown_cat_col_list
         
-        def pearson_coeff(x, lag):
+        def pearson_coeff(x):
             # remove temporal/auto correlation using differencing
             x = x[[target_col]+temp_num_cols].diff(axis=0)
-            x.dropna(inplace=True)
-            x[temp_num_cols] = x[temp_num_cols].shift(periods=lag)
             x.dropna(inplace=True)
             return x.corr()
             
         # Pearson Correlation Distribution
         plots = []
         for stat_col in stat_cols:
-            data = data.groupby([stat_col, id_col]).filter(lambda x: len(x) > (len(time_lags) + 3))
-            data = data.groupby([stat_col, id_col]).filter(lambda x: len(x[target_col].unique()) > 1)
+            #df_corr = data.groupby([stat_col, id_col])[[target_col] + temp_num_cols].corr().reset_index()
+            df_corr = data.groupby([stat_col, id_col]).apply(lambda x: pearson_coeff(x)).reset_index()
             subplots = []
-            for lag in time_lags:
-                df_corr = data.groupby([stat_col, id_col]).apply(lambda x: pearson_coeff(x, lag)).reset_index()
-                for temp_num_col in temp_num_cols:
-                    for level in df_corr[stat_col].unique().tolist():
-                        title = "Corr. coeff density over " + stat_col +  " between " + target_col + " & " + temp_num_col
-                        df_temp = df_corr[(df_corr[stat_col]==level)&(df_corr['level_2']==target_col)][[stat_col,id_col,target_col,temp_num_col]]
-                        points = hv.Distribution(df_temp[temp_num_col].values).opts(xlabel=target_col + '_' + temp_num_col + '_' + str(lag) + '_corr_coeff',
-                                                                                    ylabel="density_over_" + level,
-                                                                                    height=plot_size[0], 
-                                                                                    width=plot_size[1], 
-                                                                                    title=title).opts(tools=['hover'],)              
-                        fig = hv.render(points)
-                        subplots.append(fig)
+            for temp_num_col in temp_num_cols:
+                title = "Corr. coeff density over " + stat_col +  " between " + target_col + " & " + temp_num_col
+                df_temp = df_corr[df_corr['level_2']==target_col][[stat_col,id_col,target_col,temp_num_col]]
+                points = hv.Distribution(df_temp[temp_num_col].values).opts(xlabel=target_col + '_' + temp_num_col + '_corr_coeff', height=plot_size[0], width=plot_size[1], title=title).opts(tools=['hover'],)              
+                fig = hv.render(points)
+                subplots.append(fig)
             plots.append(subplots)
         
         html = """<h3>Distribution of linear correlation coefficient</h3>"""
@@ -405,20 +393,17 @@ class eda:
         # Non-linear Correlation (MI) Distribution - Numeric Columns
         plots = []  
         for stat_col in stat_cols: 
-            data = data.groupby([stat_col, id_col]).filter(lambda x: len(x) > (len(time_lags) + 3))
             df_corr = data.groupby([stat_col, id_col]).apply(lambda x: mi(x)).reset_index()
             subplots = []
             for temp_num_col in temp_num_cols:
                 df_temp = df_corr[[stat_col,id_col,temp_num_col,'level_2']]
                 for level in df_temp[stat_col].unique().tolist():
                     for lag in time_lags:
-                        title = "MI density over " + stat_col +  " between " + target_col + " & " + temp_num_col
                         df_level = df_temp[(df_temp[stat_col]==level)&(df_temp['level_2']==lag)]
                         points = hv.Distribution(df_level[temp_num_col].values).opts(xlabel=target_col + '_' + temp_num_col + '_lag_' + str(lag) + '_mi', 
-                                                                                 ylabel='density_over_'+ level,
+                                                                                 ylabel='density_over_'+level,
                                                                                  height=plot_size[0], 
-                                                                                 width=plot_size[1],
-                                                                                 title=title).opts(tools=['hover'],)
+                                                                                 width=plot_size[1]).opts(tools=['hover'],)
 
                         fig = hv.render(points)
                         subplots.append(fig)
@@ -432,8 +417,6 @@ class eda:
         # Non-linear Correlation (MI) Distribution - Non-Numeric Columns
         plots = [] 
         for stat_col in stat_cols: 
-            data = data.groupby([stat_col, id_col]).filter(lambda x: len(x) > (len(time_lags) + 3))
-            data = data.groupby([stat_col, id_col]).filter(lambda x: len(x[target_col].unique()) > 1)
             df_corr = data.groupby([stat_col, id_col]).apply(lambda x: mi_discrete(x)).reset_index()
             df_corr['level_2'].replace(to_replace=df_corr['level_2'].unique().tolist(), value=time_lags, inplace=True)
             subplots = []
@@ -441,13 +424,11 @@ class eda:
                 df_temp = df_corr[[stat_col,id_col,temp_cat_col,'level_2']]
                 for level in df_temp[stat_col].unique().tolist():
                     for lag in time_lags:
-                        title = "MI density over " + stat_col +  " between " + target_col + " & " + temp_cat_col
                         df_level = df_temp[(df_temp[stat_col]==level)&(df_temp['level_2']==lag)]
                         points = hv.Distribution(df_level[temp_cat_col].values).opts(xlabel=target_col + '_' + temp_cat_col + '_lag_' + str(lag) + '_mi', 
                                                                                  ylabel='density_over_'+level,
                                                                                  height=plot_size[0], 
-                                                                                 width=plot_size[1],
-                                                                                 title=title).opts(tools=['hover'],)
+                                                                                 width=plot_size[1]).opts(tools=['hover'],)
 
                         fig = hv.render(points)
                         subplots.append(fig)

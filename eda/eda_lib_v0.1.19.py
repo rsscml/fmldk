@@ -18,8 +18,6 @@ import time
 import scipy
 import warnings
 warnings.filterwarnings("ignore")
-warnings.simplefilter(action='ignore', category=FutureWarning)
-from statsmodels.tsa.stattools import adfuller
 
 # bokeh imports
 from bokeh.plotting import figure, output_file, show, output_notebook, save
@@ -40,7 +38,7 @@ hv.extension('bokeh')
 from ennemi import estimate_mi, normalize_mi, pairwise_mi
 
 class eda:
-    def __init__(self, col_dict, PARALLEL_DATA_JOBS=4, PARALLEL_DATA_JOBS_BATCHSIZE=128):
+    def __init__(self, col_dict):
         """
         col_dict: dictionary of various column groups {id_col:'',
                                                        target_col:'',
@@ -58,8 +56,6 @@ class eda:
 
         """
         self.col_dict = col_dict
-        self.PARALLEL_DATA_JOBS = PARALLEL_DATA_JOBS
-        self.PARALLEL_DATA_JOBS_BATCHSIZE = PARALLEL_DATA_JOBS_BATCHSIZE
         
         # extract columnsets from col_dict
         self.id_col = self.col_dict.get('id_col', None)
@@ -335,65 +331,22 @@ class eda:
         temp_num_cols = self.temporal_known_num_col_list + self.temporal_unknown_num_col_list
         temp_cat_cols = self.temporal_known_cat_col_list + self.temporal_unknown_cat_col_list
         
-        # stationarity test fn.
-        def adf_test(x):
-            for col in [target_col]+temp_num_cols:
-                result = adfuller(x[col].values)
-                adf_stat = result[0]
-                p_val = result[1]
-                critical_val = min(list(result[4].values()))
-                if p_val > 0.01:
-                    if adf_stat > critical_val:
-                        x['{}_stationary'.format(col)] = 0
-                    else:
-                        # stationary
-                        x['{}_stationary'.format(col)] = 1
-                else:
-                    # inconclusive -- treat as stationary
-                    x['{}_stationary'.format(col)] = 1
-            
-            return x
-        
-        # calculate stationarity columns
-        groups = data.groupby(id_col)
-        adf_df = Parallel(n_jobs=self.PARALLEL_DATA_JOBS, batch_size=self.PARALLEL_DATA_JOBS_BATCHSIZE)(delayed(adf_test)(x) for _,x in groups)
-        data = pd.concat(adf_df, axis=0)
-        data = data.reset_index(drop=True)
-        
-        def pearson_coeff(x, lag, stat_col, id_col):
-            # reduce temporal/auto correlation using differencing
-            for col in [target_col]+temp_num_cols:
-                if x['{}_stationary'.format(col)].max()==0:
-                    x[col] = x[col].diff(periods=1)
-                
-            x = x.dropna(subset=[target_col]+temp_num_cols)
-            
+        def pearson_coeff(x, lag):
+            # remove temporal/auto correlation using differencing
+            x = x[[target_col]+temp_num_cols].diff(axis=0)
+            x.dropna(inplace=True)
             x[temp_num_cols] = x[temp_num_cols].shift(periods=lag)
-            x = x.dropna(subset=temp_num_cols)
-            
-            corr_df = x[[target_col]+temp_num_cols].corr()
-            corr_df = corr_df.reset_index()
-            corr_df.rename(columns={'index':'level_2'}, inplace=True)
-    
-            x = x[[stat_col, id_col]].drop_duplicates().reset_index(drop=True)
-            corr_df = pd.concat([x, corr_df], axis=1)
-            corr_df.fillna(method='ffill', inplace=True)
-
-            return corr_df
+            x.dropna(inplace=True)
+            return x.corr()
             
         # Pearson Correlation Distribution
         plots = []
         for stat_col in stat_cols:
-            df_stat = data.groupby([stat_col, id_col]).filter(lambda x: len(x) > (len(time_lags) + 6))
-            df_stat = df_stat.groupby([stat_col, id_col]).filter(lambda x: len(x[target_col].unique()) > 1)
+            data = data.groupby([stat_col, id_col]).filter(lambda x: len(x) > (len(time_lags) + 3))
+            data = data.groupby([stat_col, id_col]).filter(lambda x: len(x[target_col].unique()) > 1)
             subplots = []
             for lag in time_lags:
-                #df_corr = df_stat.groupby([stat_col, id_col]).apply(lambda x: pearson_coeff(x, lag)).reset_index()
-                # parallel process
-                groups = df_stat.groupby([stat_col, id_col])
-                corr = Parallel(n_jobs=self.PARALLEL_DATA_JOBS, batch_size=self.PARALLEL_DATA_JOBS_BATCHSIZE)(delayed(pearson_coeff)(x, lag, stat_col, id_col) for _,x in groups)
-                df_corr = pd.concat(corr, axis=0)
-                df_corr = df_corr.reset_index(drop=True)
+                df_corr = data.groupby([stat_col, id_col]).apply(lambda x: pearson_coeff(x, lag)).reset_index()
                 for temp_num_col in temp_num_cols:
                     for level in df_corr[stat_col].unique().tolist():
                         title = "Corr. coeff density over " + stat_col +  " between " + target_col + " & " + temp_num_col
@@ -415,67 +368,45 @@ class eda:
         # MI specific functions
         rng = np.random.default_rng(1234) 
         
-        def mi(x, stat_col, id_col):
-            # reduce temporal/auto correlation using differencing
-            for col in [target_col]+temp_num_cols:
-                if x['{}_stationary'.format(col)].max()==0:
-                    x[col] = x[col].diff(periods=1)
-            
-            x = x.dropna(subset=[target_col]+temp_num_cols)
-            
+        def mi(x):
             # Add random noise to avoid discrete/low resolution distributions. MI goes to -inf otherwise
             for col in temp_num_cols:
                 x[col] += rng.normal(0, 1e-6, size=len(x))
             x[target_col] += rng.normal(0, 1e-6, size=len(x))
-                
+            
+            # Difference series to avoid/reduce autocorrelation. MI reported too high otherwise.
+            x = x[[target_col]+temp_num_cols].diff(axis=0)
+            x.dropna(inplace=True)
+            
             # lags
             lags = time_lags
+            
             emi = estimate_mi(x[target_col], x[temp_num_cols], lag=lags, normalize=True, preprocess=True)
-            emi = emi.reset_index()
-            emi.rename(columns={'index':'level_2'}, inplace=True)
-            
-            x = x[[stat_col, id_col]].drop_duplicates().reset_index(drop=True)
-            emi = pd.concat([x, emi], axis=1)
-            emi.fillna(method='ffill', inplace=True)
-            
             return emi
        
-        def mi_discrete(x, stat_col, id_col):
-            # reduce temporal/auto correlation using differencing
-            for col in [target_col]:
-                if x['{}_stationary'.format(col)].max()==0:
-                    x[col] = x[col].diff(periods=1)
-
-            x = x.dropna(subset=[target_col] + temp_cat_cols)
-            
+        def mi_discrete(x):
             temp_cat_arr = x[temp_cat_cols].values
             x[target_col] += rng.normal(0, 1e-6, size=len(x))
             target_arr = x[target_col].values
             
+            # Difference series to avoid/reduce autocorrelation. MI reported too high otherwise.
+            x = x[[target_col]].diff(axis=0)
+            x.dropna(inplace=True)
+            
             # lags
             lags = time_lags
+            
             emi = estimate_mi(target_arr, temp_cat_arr, discrete_x=True, lag=lags, normalize=False)
             emi = normalize_mi(emi)
             emi_df = pd.DataFrame(emi)
             emi_df.columns = temp_cat_cols
-            emi_df['level_2'] = pd.Series(lags) 
-    
-            x = x[[stat_col, id_col]].drop_duplicates().reset_index(drop=True)
-            emi_df = pd.concat([x, emi_df], axis=1)
-            emi_df.fillna(method='ffill', inplace=True)
-            
             return emi_df
         
         # Non-linear Correlation (MI) Distribution - Numeric Columns
         plots = []  
         for stat_col in stat_cols: 
-            df_stat = data.groupby([stat_col, id_col]).filter(lambda x: len(x) > (len(time_lags) + 6))
-            #df_corr = df_stat.groupby([stat_col, id_col]).apply(lambda x: mi(x)).reset_index()
-            # parallel process
-            groups = df_stat.groupby([stat_col, id_col])
-            emi = Parallel(n_jobs=self.PARALLEL_DATA_JOBS, batch_size=self.PARALLEL_DATA_JOBS_BATCHSIZE)(delayed(mi)(x, stat_col, id_col) for _,x in groups)            
-            df_corr = pd.concat(emi, axis=0)
-            df_corr = df_corr.reset_index(drop=True)
+            data = data.groupby([stat_col, id_col]).filter(lambda x: len(x) > (len(time_lags) + 3))
+            df_corr = data.groupby([stat_col, id_col]).apply(lambda x: mi(x)).reset_index()
             subplots = []
             for temp_num_col in temp_num_cols:
                 df_temp = df_corr[[stat_col,id_col,temp_num_col,'level_2']]
@@ -501,15 +432,10 @@ class eda:
         # Non-linear Correlation (MI) Distribution - Non-Numeric Columns
         plots = [] 
         for stat_col in stat_cols: 
-            df_stat = data.groupby([stat_col, id_col]).filter(lambda x: len(x) > (len(time_lags) + 6))
-            df_stat = df_stat.groupby([stat_col, id_col]).filter(lambda x: len(x[target_col].unique()) > 1)
-            #df_corr = df_stat.groupby([stat_col, id_col]).apply(lambda x: mi_discrete(x)).reset_index()
-            #df_corr['level_2'].replace(to_replace=df_corr['level_2'].unique().tolist(), value=time_lags, inplace=True)
-            # parallel process
-            groups = df_stat.groupby([stat_col, id_col])
-            emi = Parallel(n_jobs=self.PARALLEL_DATA_JOBS, batch_size=self.PARALLEL_DATA_JOBS_BATCHSIZE)(delayed(mi_discrete)(x, stat_col, id_col) for _,x in groups)            
-            df_corr = pd.concat(emi, axis=0)
-            df_corr = df_corr.reset_index(drop=True)
+            data = data.groupby([stat_col, id_col]).filter(lambda x: len(x) > (len(time_lags) + 3))
+            data = data.groupby([stat_col, id_col]).filter(lambda x: len(x[target_col].unique()) > 1)
+            df_corr = data.groupby([stat_col, id_col]).apply(lambda x: mi_discrete(x)).reset_index()
+            df_corr['level_2'].replace(to_replace=df_corr['level_2'].unique().tolist(), value=time_lags, inplace=True)
             subplots = []
             for temp_cat_col in temp_cat_cols:
                 df_temp = df_corr[[stat_col,id_col,temp_cat_col,'level_2']]
@@ -536,177 +462,4 @@ class eda:
         supergrid = gridplot([layout_1,layout_2,layout_3,layout_4,layout_5,layout_6,layout_7,layout_8,layout_9,layout_10,
                               layout_11,layout_12], ncols=1)
         save(supergrid)
-        
-    def get_correlations(self, data, time_lags=[-1,0,1]):
-        id_col = self.id_col
-        target_col = self.target_col
-        stat_cols = self.static_num_col_list + self.static_cat_col_list
-        if len(stat_cols)==0:
-            # add a dummy column 'dummy_static_col'
-            data['dummy_static_col'] = 'dummy'
-            stat_cols = ['dummy_static_col']
-        temp_num_cols = self.temporal_known_num_col_list + self.temporal_unknown_num_col_list
-        temp_cat_cols = self.temporal_known_cat_col_list + self.temporal_unknown_cat_col_list
-        
-        data = data[[id_col] + [self.time_index_col] + [target_col] + stat_cols + temp_num_cols + temp_cat_cols]
-        data = self.sort_dataset(data)
-        
-        # stationarity test fn.
-        def adf_test(x):
-            for col in [target_col]+temp_num_cols:
-                result = adfuller(x[col].values)
-                adf_stat = result[0]
-                p_val = result[1]
-                critical_val = min(list(result[4].values()))
-                if p_val > 0.01:
-                    if adf_stat > critical_val:
-                        x['{}_stationary'.format(col)] = 0
-                    else:
-                        # stationary
-                        x['{}_stationary'.format(col)] = 1
-                else:
-                    # inconclusive -- treat as stationary
-                    x['{}_stationary'.format(col)] = 1
-            
-            return x
-        
-        # pearsons & spearsons r     
-        def pearson_coeff(x, lag, id_col):
-            # reduce temporal/auto correlation using differencing
-            for col in [target_col]+temp_num_cols:
-                if x['{}_stationary'.format(col)].max()==0:
-                    x[col] = x[col].diff(periods=1)
 
-            x = x.dropna(subset=[target_col]+temp_num_cols)
-
-            x[temp_num_cols] = x[temp_num_cols].shift(periods=lag)
-            x = x.dropna(subset=temp_num_cols)
-
-            p_df = x[[target_col]+temp_num_cols].corr(method='pearson')
-            p_df = p_df.reset_index()
-            p_df.rename(columns={'index':'level_2'}, inplace=True)
-            p_df = p_df[p_df['level_2']==target_col]
-            p_df.drop(columns=['level_2',target_col], inplace=True)
-            for col in temp_num_cols:
-                p_df.rename(columns={col:'{}_pearson_coeff'.format(col)}, inplace=True)
-                
-            s_df = x[[target_col]+temp_num_cols].corr(method='spearman')
-            s_df = s_df.reset_index()
-            s_df.rename(columns={'index':'level_2'}, inplace=True)
-            s_df = s_df[s_df['level_2']==target_col]
-            s_df.drop(columns=['level_2',target_col], inplace=True)
-            for col in temp_num_cols:
-                s_df.rename(columns={col:'{}_spearman_coeff'.format(col)}, inplace=True)
-
-            x = x[[id_col]].drop_duplicates().reset_index(drop=True)
-            corr_df = pd.concat([x, p_df, s_df], axis=1)
-            corr_df.fillna(method='ffill', inplace=True)
-            corr_df['lag'] = lag
-            
-            return corr_df
-        
-        # MI specific functions
-        rng = np.random.default_rng(1234) 
-        
-        def mi(x, id_col):
-            # reduce temporal/auto correlation using differencing
-            for col in [target_col]+temp_num_cols:
-                if x['{}_stationary'.format(col)].max()==0:
-                    x[col] = x[col].diff(periods=1)
-            
-            x = x.dropna(subset=[target_col]+temp_num_cols)
-            
-            # Add random noise to avoid discrete/low resolution distributions. MI goes to -inf otherwise
-            for col in temp_num_cols:
-                x[col] += rng.normal(0, 1e-6, size=len(x))
-            x[target_col] += rng.normal(0, 1e-6, size=len(x))
-                
-            # lags
-            lags = time_lags
-            emi = estimate_mi(x[target_col], x[temp_num_cols], lag=lags, normalize=True, preprocess=True)
-            emi = emi.reset_index()
-            emi.rename(columns={'index':'lag'}, inplace=True)
-            for col in temp_num_cols:
-                emi.rename(columns={col:'{}_MI_Continuous'.format(col)}, inplace=True)
-
-            x = x[[id_col]].drop_duplicates().reset_index(drop=True)
-            emi = pd.concat([x, emi], axis=1)
-            emi.fillna(method='ffill', inplace=True)
-            
-            return emi
-       
-        def mi_discrete(x, id_col):
-            # reduce temporal/auto correlation using differencing
-            for col in [target_col]:
-                if x['{}_stationary'.format(col)].max()==0:
-                    x[col] = x[col].diff(periods=1)
-
-            x = x.dropna(subset=[target_col] + temp_cat_cols)
-            
-            temp_cat_arr = x[temp_cat_cols].values
-            x[target_col] += rng.normal(0, 1e-6, size=len(x))
-            target_arr = x[target_col].values
-            
-            # lags
-            lags = time_lags
-            emi = estimate_mi(target_arr, temp_cat_arr, discrete_x=True, lag=lags, normalize=False)
-            emi = normalize_mi(emi)
-            emi_df = pd.DataFrame(emi)
-            emi_df.columns = temp_cat_cols
-            emi_df['lag'] = pd.Series(lags) 
-            
-            for col in temp_cat_cols:
-                emi_df.rename(columns={col:'{}_MI_Discrete'.format(col)}, inplace=True)
-    
-            x = x[[id_col]].drop_duplicates().reset_index(drop=True)
-            emi_df = pd.concat([x, emi_df], axis=1)
-            emi_df.fillna(method='ffill', inplace=True)
-            
-            return emi_df
-        
-        # filter out ids with too little data
-        data = data.groupby([id_col]).filter(lambda x: len(x) > (len(time_lags) + 6))
-        data = data.groupby([id_col]).filter(lambda x: len(x[target_col].unique()) > 1)
-        
-        # obtain metrics for each id
-        groups = data.groupby(id_col)
-        
-        # calculate stationarity columns
-        adf_df = Parallel(n_jobs=self.PARALLEL_DATA_JOBS, batch_size=self.PARALLEL_DATA_JOBS_BATCHSIZE)(delayed(adf_test)(x) for _,x in groups)
-        data = pd.concat(adf_df, axis=0)
-        data = data.reset_index(drop=True)
-        
-        # pearson & spearman corr coeff df
-        groups = data.groupby(id_col)
-        
-        corr_df_list = []
-        for lag in time_lags:
-            corr = Parallel(n_jobs=self.PARALLEL_DATA_JOBS, batch_size=self.PARALLEL_DATA_JOBS_BATCHSIZE)(delayed(pearson_coeff)(x, lag, id_col) for _,x in groups)
-            df = pd.concat(corr, axis=0)
-            df = df.reset_index(drop=True)
-            corr_df_list.append(df)
-        
-        corr_df = pd.concat(corr_df_list, axis=0)
-        corr_df = corr_df.reset_index(drop=True)
-        
-        # MI df
-        groups = data.groupby(id_col)
-        
-        emi = Parallel(n_jobs=self.PARALLEL_DATA_JOBS, batch_size=self.PARALLEL_DATA_JOBS_BATCHSIZE)(delayed(mi)(x, id_col) for _,x in groups)            
-        mi_df = pd.concat(emi, axis=0)
-        mi_df= mi_df.reset_index(drop=True)
-        
-        # corr_df, mi merge
-        corr_df = corr_df.merge(mi_df, on=[id_col,'lag'], how='left')
-        
-        # MI Discrete df
-        groups = data.groupby(id_col)
-        
-        emi_disc = Parallel(n_jobs=self.PARALLEL_DATA_JOBS, batch_size=self.PARALLEL_DATA_JOBS_BATCHSIZE)(delayed(mi_discrete)(x, id_col) for _,x in groups)            
-        mi_disc_df = pd.concat(emi_disc, axis=0)
-        mi_disc_df= mi_disc_df.reset_index(drop=True)
-       
-        # corr_df, mi disc merge
-        corr_df = corr_df.merge(mi_disc_df, on=[id_col,'lag'], how='left')
-        
-        return corr_df

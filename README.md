@@ -305,7 +305,7 @@ Create Interactive EDA Report
 
 import eda
 
-eda_object = eda.eda(col_dict=columns_dict)  # 'columns_dict' -- similar to the one used in 'tfr_dataset'
+eda_object = eda.eda(col_dict=columns_dict, PARALLEL_DATA_JOBS=4, PARALLEL_DATA_JOBS_BATCHSIZE=128)  # 'columns_dict' -- similar to the one used in 'tfr_dataset'
 eda_object.create_report(data=df, filename='eda_report.html') # df is the pandas dataframe, filename is the full path of the to-be generated report
 
 The create_report method takes a few more arguments:

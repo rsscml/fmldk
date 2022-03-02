@@ -26,7 +26,7 @@ from bokeh.palettes import Category10, Category20, Colorblind
 from bokeh.io import reset_output
 from bokeh.models.ranges import DataRange1d
 
-class dl_dataset:
+class tfr_dataset:
     def __init__(self, 
                  col_dict, 
                  window_len, 

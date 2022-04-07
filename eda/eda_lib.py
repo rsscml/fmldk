@@ -384,7 +384,7 @@ class eda:
         # Pearson Correlation Distribution
         plots = []
         for stat_col in stat_cols:
-            df_stat = data.groupby([stat_col, id_col]).filter(lambda x: len(x) > (len(time_lags) + 6))
+            df_stat = data.groupby([stat_col, id_col]).filter(lambda x: len(x) > max(10,(len(time_lags) + 6)))
             df_stat = df_stat.groupby([stat_col, id_col]).filter(lambda x: len(x[target_col].unique()) > 1)
             subplots = []
             for lag in time_lags:
@@ -469,7 +469,7 @@ class eda:
         # Non-linear Correlation (MI) Distribution - Numeric Columns
         plots = []  
         for stat_col in stat_cols: 
-            df_stat = data.groupby([stat_col, id_col]).filter(lambda x: len(x) > (len(time_lags) + 6))
+            df_stat = data.groupby([stat_col, id_col]).filter(lambda x: len(x) > max(10,(len(time_lags) + 6)))
             #df_corr = df_stat.groupby([stat_col, id_col]).apply(lambda x: mi(x)).reset_index()
             # parallel process
             groups = df_stat.groupby([stat_col, id_col])
@@ -501,7 +501,7 @@ class eda:
         # Non-linear Correlation (MI) Distribution - Non-Numeric Columns
         plots = [] 
         for stat_col in stat_cols: 
-            df_stat = data.groupby([stat_col, id_col]).filter(lambda x: len(x) > (len(time_lags) + 6))
+            df_stat = data.groupby([stat_col, id_col]).filter(lambda x: len(x) > max(10,(len(time_lags) + 6)))
             df_stat = df_stat.groupby([stat_col, id_col]).filter(lambda x: len(x[target_col].unique()) > 1)
             #df_corr = df_stat.groupby([stat_col, id_col]).apply(lambda x: mi_discrete(x)).reset_index()
             #df_corr['level_2'].replace(to_replace=df_corr['level_2'].unique().tolist(), value=time_lags, inplace=True)
@@ -665,7 +665,7 @@ class eda:
             return emi_df
         
         # filter out ids with too little data
-        data = data.groupby([id_col]).filter(lambda x: len(x) > (len(time_lags) + 6))
+        data = data.groupby([id_col]).filter(lambda x: len(x) > max(10,(len(time_lags) + 6)))
         data = data.groupby([id_col]).filter(lambda x: len(x[target_col].unique()) > 1)
         
         # obtain metrics for each id

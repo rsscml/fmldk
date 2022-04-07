@@ -446,12 +446,32 @@ class tfr_dataset:
         model_in = np.vstack(model_in)
         model_out = np.vstack(model_out)
         scale = np.vstack(scale)
+        weights = np.vstack(weights)    
+        
+        '''
+        data_gen = self.data_generator(data)
+        
+        model_in = []
+        model_out =[]
+        scale = []
+        weights =[]
+        
+        obs_count = 0
+        for i, (m_in, m_out, s, w) in enumerate(data_gen):
+            obs_count += m_in.shape[0]
+            if obs_count < num_observations: 
+                model_in.append(m_in)
+                model_out.append(m_out)
+                scale.append(s)
+                weights.append(w)
+            else:
+                break
+                
+        model_in = np.vstack(model_in)
+        model_out = np.vstack(model_out)
+        scale = np.vstack(scale)
         weights = np.vstack(weights)
-
-        # shuffle
-        p = np.random.permutation(len(model_in))
-        model_in, model_out, scale, weights = model_in[p], model_out[p], scale[p], weights[p]
-
+        '''
         return model_in.astype(str), model_out.astype(np.float32), scale.astype(np.float32), weights.astype(np.float32)
         
             
@@ -772,13 +792,13 @@ class tfr_dataset:
             model_in_y, model_out_y, scale_y, weights_y = self.static_dataset(test_data, batchsize=self.batch*max(m.ceil(test_data[self.id_col].nunique()*0.01), 200), use_memmap=use_memmap, prefix='test')
             
             if tf.__version__ < "2.7.0":
-                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).batch(self.batch, drop_remainder=True)
-                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).batch(self.batch, drop_remainder=True)
+                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).shuffle(SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=True).batch(self.batch, drop_remainder=True)
+                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).batch(self.batch, drop_remainder=False)
             else:
-                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).batch(self.batch, drop_remainder=True, num_parallel_calls=self.PARALLEL_DATA_JOBS)
-                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).batch(self.batch, drop_remainder=True, num_parallel_calls=self.PARALLEL_DATA_JOBS)
+                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).shuffle(SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=True).batch(self.batch, drop_remainder=True, num_parallel_calls=self.PARALLEL_DATA_JOBS)
+                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).batch(self.batch, drop_remainder=False, num_parallel_calls=self.PARALLEL_DATA_JOBS)
         
-        elif fill_buffer:
+        else:
             #avg_train_samples = max(1, int((train_data.groupby(self.id_col).size().mean() - self.window_len)/self.interleave))
             #num_train_observations = avg_train_samples*train_data[self.id_col].nunique()
             
@@ -792,11 +812,11 @@ class tfr_dataset:
             TEST_SHUFFLE_BUFFER_SIZE = model_in_y.shape[0] # num_test_observations
             
             if tf.__version__ < "2.7.0":
-                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).batch(self.train_test_batch_size, drop_remainder=True)
-                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).batch(self.train_test_batch_size, drop_remainder=True)
+                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).shuffle(TRAIN_SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=True).batch(self.train_test_batch_size, drop_remainder=True)
+                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).shuffle(TEST_SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=True).batch(self.train_test_batch_size, drop_remainder=False)
             else:
-                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).batch(self.train_test_batch_size, drop_remainder=True, num_parallel_calls=self.PARALLEL_DATA_JOBS)
-                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).batch(self.train_test_batch_size, drop_remainder=True, num_parallel_calls=self.PARALLEL_DATA_JOBS)
+                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).shuffle(TRAIN_SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=True).batch(self.train_test_batch_size, drop_remainder=True, num_parallel_calls=self.PARALLEL_DATA_JOBS)
+                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).shuffle(TEST_SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=True).batch(self.train_test_batch_size, drop_remainder=False, num_parallel_calls=self.PARALLEL_DATA_JOBS)
          
         return trainset, testset
         

@@ -432,7 +432,7 @@ class tfr_dataset:
             # extract rows for these sample_ids in parallel
             df = data[self.col_list].query("{}==@sample_id".format(self.id_col))
             arr, pad_arr = self.static_arrs(df, use_memmap=False, prefix='fill_buffer') 
-            valid_indices = np.where(np.count_nonzero(arr[:,:self.window_len-self.fh,self.target_index].astype(np.float32)>0,axis=1)>=self.min_nz)
+            valid_indices = np.where(np.count_nonzero(arr[:,:self.window_len-self.fh,self.target_index].astype(np.float32)>=0,axis=1)>=self.min_nz)
             arr = arr[valid_indices]
             pad_arr = pad_arr[valid_indices]
             m_in, m_out, s, w  = self.preprocess(arr, pad_arr)
@@ -656,8 +656,8 @@ class tfr_dataset:
         model_in = np.concatenate((model_in, mask), axis=-1)
 
         # sample weights
-        weights = np.squeeze(target_nz_mean)/np.quantile(np.squeeze(target_nz_mean), q=0.8)
-        weights = np.clip(weights, a_min=0.5, a_max=1.0)
+        weights = np.around(np.log10(np.squeeze(target_nz_mean) + 10),2) #/ np.quantile(np.squeeze(target_nz_mean), q=0.8)
+        weights = np.clip(weights, a_min=1.0, a_max=2.0)
         weights = weights.reshape(-1,1)
         #weights = np.expand_dims(weights.reshape(-1,1), axis=-1)
         #weights = np.tile(weights, [1,sequence_len,1])
@@ -785,9 +785,15 @@ class tfr_dataset:
             #avg_test_samples = max(1, int((test_data.groupby(self.id_col).size().mean() - self.window_len)))
             #num_test_observations = avg_test_samples*test_data[self.id_col].nunique()
             
-            model_in_x, model_out_x, scale_x, weights_x = self.fill_buffer(train_data) # , num_observations=num_train_observations)
-            model_in_y, model_out_y, scale_y, weights_y = self.fill_buffer(test_data) # , num_observations=num_test_observations)
-            
+            model_in_x, model_out_x, scale_x, _ = self.fill_buffer(train_data) # , num_observations=num_train_observations)
+            model_in_y, model_out_y, scale_y, _ = self.fill_buffer(test_data) # , num_observations=num_test_observations)
+
+            # weights over entire dataset based on scale
+            weights_x = np.around(np.log10(np.squeeze(scale_x[:, -1:, :]) + 10),2)
+            weights_x = weights_x.reshape(-1, 1)
+            weights_y = np.around(np.log10(np.squeeze(scale_y[:, -1:, :]) + 10),2)
+            weights_y = weights_y.reshape(-1, 1)
+
             TRAIN_SHUFFLE_BUFFER_SIZE = model_in_x.shape[0] # num_train_observations
             TEST_SHUFFLE_BUFFER_SIZE = model_in_y.shape[0] # num_test_observations
             

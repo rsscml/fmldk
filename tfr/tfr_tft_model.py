@@ -1,9 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
-
-
 import numpy as np
 import math as m
 import tensorflow as tf
@@ -14,9 +11,6 @@ import pickle
 import absl.logging
 absl.logging.set_verbosity(absl.logging.ERROR)
 import pandas as pd
-
-
-# In[2]:
 
 
 # Distribution Sampling functions
@@ -578,9 +572,6 @@ class final_gating_layer(tf.keras.layers.Layer):
         return out
 
 
-# In[ ]:
-
-
 # TFT Model
 
 class TFT(tf.keras.Model):
@@ -744,9 +735,6 @@ class TFT(tf.keras.Model):
         else:
             return out, parameters, stat_weights, past_weights, future_weights
             
-
-
-# In[ ]:
 
 
 # TFT Wrapper
@@ -1310,9 +1298,6 @@ def TFT_Infer(model, inputs, loss_type, hist_len, f_len, target_index, num_quant
     return forecast_df, stat_wts_df, encoder_wts_df, decoder_wts_df
 
 
-# In[ ]:
-
-
 class Temporal_Fusion_Transformer:
     def __init__(self, 
                  col_index_dict,
@@ -1400,4 +1385,3 @@ class Temporal_Fusion_Transformer:
         
         return forecast, [stat_wts_df, encoder_wts_df, decoder_wts_df]
        
-

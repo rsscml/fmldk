@@ -1164,11 +1164,11 @@ def SparseVarTransformer_Infer(model, inputs, loss_type, hist_len, f_len, target
             encoder_columns_string = []
             decoder_columns_string = []
             for col in stat_columns:
-                stat_columns_string.append(col.numpy().decode("utf-8")) 
+                stat_columns_string.append(col)
             for col in encoder_columns:
-                encoder_columns_string.append(col.numpy().decode("utf-8"))
+                encoder_columns_string.append(col)
             for col in decoder_columns:
-                decoder_columns_string.append(col.numpy().decode("utf-8"))
+                decoder_columns_string.append(col)
                 
             stat_wts, encoder_wts, decoder_wts = wts_list
             # Average feature weights across time dim
@@ -1253,11 +1253,11 @@ def SparseVarTransformer_Infer_Piecewise(model, inputs, loss_type, hist_len, f_l
                 encoder_columns_string = []
                 decoder_columns_string = []
                 for col in stat_columns:
-                    stat_columns_string.append(col.numpy().decode("utf-8")) 
+                    stat_columns_string.append(col)
                 for col in encoder_columns:
-                    encoder_columns_string.append(col.numpy().decode("utf-8"))
+                    encoder_columns_string.append(col)
                 for col in decoder_columns:
-                    decoder_columns_string.append(col.numpy().decode("utf-8"))
+                    decoder_columns_string.append(col)
                 
                 stat_wts, encoder_wts, decoder_wts = wts_list
                 # Average feature weights across time dim

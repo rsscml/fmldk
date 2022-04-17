@@ -642,10 +642,6 @@ class all_variable_select_concat_layer(tf.keras.layers.Layer):
         
         return tfr_input, dynamic_weights   
 
-
-# In[ ]:
-
-
 # Variable Weighted Transformer Model
 
 class VarTransformer(tf.keras.Model):
@@ -763,10 +759,6 @@ class VarTransformer(tf.keras.Model):
         else:
             return out, parameters, static_weights, encoder_weights, decoder_weights
 
-
-# In[ ]:
-
-
 # Transformer Base Model
 
 class Transformer(tf.keras.Model):
@@ -855,10 +847,6 @@ class Transformer(tf.keras.Model):
         else:
             return out, parameters
 
-
-# In[ ]:
-
-
 # Transformer Wrapper
 
 class Transformer_Model(tf.keras.Model):
@@ -871,6 +859,7 @@ class Transformer_Model(tf.keras.Model):
                  forecast_horizon,
                  max_inp_len,
                  loss_type,
+                 decoder_lags='Default',
                  dropout_rate=0.1):
         """
         col_index_dict: A dictionary with struct {'colgroup_indices': [column names list, column indices list]}
@@ -900,7 +889,10 @@ class Transformer_Model(tf.keras.Model):
         self.forecast_horizon = forecast_horizon
         self.max_inp_len = max_inp_len
         self.dropout_rate = dropout_rate
-        self.decoder_lags = max(int(self.hist_len/4), 2)
+        if decoder_lags == 'Default':
+            self.decoder_lags = max(int(self.hist_len / 4), 2)
+        else:
+            self.decoder_lags = max(int(decoder_lags), 1)
         
         self.model = Transformer(num_layers=num_layers,
                                  d_model=d_model,
@@ -983,8 +975,9 @@ class Transformer_Model(tf.keras.Model):
         
         # decoder start token -- multiple lags
         decoder_tensor = target[:,self.hist_len-1:self.hist_len-1+self.f_len,:]
-        for i in range(2, self.decoder_lags+1):
-            decoder_tensor = tf.concat([decoder_tensor, target[:,self.hist_len-i:self.hist_len-i+self.f_len,:]], axis=-1)
+        if self.decoder_lags >= 2:
+            for i in range(2, self.decoder_lags+1):
+                decoder_tensor = tf.concat([decoder_tensor, target[:,self.hist_len-i:self.hist_len-i+self.f_len,:]], axis=-1)
         
         # static numeric
         if len(self.stat_num_indices)>0:
@@ -1395,9 +1388,6 @@ def Transformer_Infer_Piecewise(model, inputs, loss_type, hist_len, f_len, targe
     return forecast_df
 
 
-# In[ ]:
-
-
 class Simple_Transformer:
     def __init__(self, 
                  col_index_dict,
@@ -1408,7 +1398,8 @@ class Simple_Transformer:
                  forecast_horizon,
                  max_inp_len,
                  loss_type,
-                 dropout_rate):
+                 decoder_lags='Default',
+                 dropout_rate=0.1):
         
         self.col_index_dict = col_index_dict
         self.vocab_dict = vocab_dict
@@ -1418,6 +1409,7 @@ class Simple_Transformer:
         self.forecast_horizon = forecast_horizon
         self.max_inp_len = max_inp_len
         self.loss_type = loss_type
+        self.decoder_lags = decoder_lags,
         self.dropout_rate = dropout_rate
         self.target_col_name, self.target_index = self.col_index_dict.get('target_index')
     
@@ -1431,6 +1423,7 @@ class Simple_Transformer:
                                   self.forecast_horizon,
                                   self.max_inp_len,
                                   self.loss_type,
+                                  self.decoder_lags,
                                   self.dropout_rate)
         
     def train(self, 
@@ -1501,12 +1494,6 @@ class Simple_Transformer:
         results_df['Forecast_Bias'] = (results_df['forecast']/np.maximum(results_df['actual'],1.0) - 1)*100
         
         return results_df
-        
-                
-
-
-# In[ ]:
-
 
 # VarTransformer Wrapper
 
@@ -1520,7 +1507,8 @@ class VarTransformer_Model(tf.keras.Model):
                  forecast_horizon,
                  max_inp_len,
                  loss_type,
-                 dropout_rate):
+                 decoder_lags='Default',
+                 dropout_rate=0.1):
 
         super(VarTransformer_Model, self).__init__()
         
@@ -1529,7 +1517,10 @@ class VarTransformer_Model(tf.keras.Model):
         self.loss_type = loss_type
         self.col_index_dict = col_index_dict
         self.vocab_dict = vocab_dict
-        self.decoder_lags = max(int(self.hist_len/4), 2)
+        if decoder_lags == 'Default':
+            self.decoder_lags = max(int(self.hist_len / 4), 2)
+        else:
+            self.decoder_lags = max(int(decoder_lags), 1)
         
         self.num_layers = num_layers
         self.num_heads = num_heads
@@ -1621,9 +1612,10 @@ class VarTransformer_Model(tf.keras.Model):
         self.scale_linear_transform_layer = tf.keras.layers.Dense(units=d_model, use_bias=False)
         
         self.decoderlag_linear_transform_layers = {}
-        for i in range(2, self.decoder_lags+1):
-            colname = "{}_lag_{}".format(self.target_col_name,i)
-            self.decoderlag_linear_transform_layers[colname] = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=d_model, use_bias=False)) 
+        if self.decoder_lags >= 2:
+            for i in range(2, self.decoder_lags+1):
+                colname = "{}_lag_{}".format(self.target_col_name,i)
+                self.decoderlag_linear_transform_layers[colname] = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=d_model, use_bias=False))
             
         if len(self.stat_num_col_names)>0:
             self.stat_linear_transform_layers = {}
@@ -1660,11 +1652,12 @@ class VarTransformer_Model(tf.keras.Model):
         future_cols_ordered_list = future_cols_ordered_list + [self.target_col_name]
         
         # decoder start token
-        for i in range(2, self.decoder_lags+1):
-            dec_lag_var = target[:,self.hist_len-i:self.hist_len-i+self.f_len,:]
-            dec_lag_var = self.decoderlag_linear_transform_layers["{}_lag_{}".format(self.target_col_name,i)](dec_lag_var)
-            decoder_vars_list.append(dec_lag_var)
-            future_cols_ordered_list = future_cols_ordered_list + ["{}_lag_{}".format(self.target_col_name,i)]
+        if self.decoder_lags >= 2:
+            for i in range(2, self.decoder_lags+1):
+                dec_lag_var = target[:,self.hist_len-i:self.hist_len-i+self.f_len,:]
+                dec_lag_var = self.decoderlag_linear_transform_layers["{}_lag_{}".format(self.target_col_name,i)](dec_lag_var)
+                decoder_vars_list.append(dec_lag_var)
+                future_cols_ordered_list = future_cols_ordered_list + ["{}_lag_{}".format(self.target_col_name,i)]
         
         # static numeric
         if len(self.stat_num_indices)>0:
@@ -2172,8 +2165,6 @@ def VarTransformer_Infer_Piecewise(model, inputs, loss_type, hist_len, f_len, ta
     return forecast_df, stat_wts_df, encoder_wts_df, decoder_wts_df
 
 
-# In[ ]:
-
 
 class Feature_Weighted_Transformer:
     def __init__(self, 
@@ -2185,7 +2176,8 @@ class Feature_Weighted_Transformer:
                  forecast_horizon,
                  max_inp_len,
                  loss_type,
-                 dropout_rate):
+                 decoder_lags='Default',
+                 dropout_rate=0.1):
         
         self.col_index_dict = col_index_dict
         self.vocab_dict = vocab_dict
@@ -2195,6 +2187,7 @@ class Feature_Weighted_Transformer:
         self.forecast_horizon = forecast_horizon
         self.max_inp_len = max_inp_len
         self.loss_type = loss_type
+        self.decoder_lags = decoder_lags
         self.dropout_rate = dropout_rate
         self.target_col_name, self.target_index = self.col_index_dict.get('target_index')
     
@@ -2208,6 +2201,7 @@ class Feature_Weighted_Transformer:
                                   self.forecast_horizon,
                                   self.max_inp_len,
                                   self.loss_type,
+                                  self.decoder_lags,
                                   self.dropout_rate)
         
     def train(self, 

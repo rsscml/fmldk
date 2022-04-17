@@ -317,3 +317,28 @@ max_static_col_levels (default (int): 100) # If there are too many levels to a s
 
 ````
 
+### New in 0.1.24 - TFT & Decoder Lags
+````
+TFT sample usage:
+
+model = Temporal_Fusion_Transformer(col_index_dict = col_index_dict,
+                                    vocab_dict = vocab,
+                                    num_layers = 1,
+                                    num_heads = 1,
+                                    d_model = 32,
+                                    forecast_horizon = 13,
+                                    max_inp_len = 13,
+                                    loss_type = 'Quantile',
+                                    num_quantiles=2,
+                                    dropout_rate=0.1)
+
+model.build()
+
+Train & Infer methods are identical to other transformers.
+
+For other transformers, one can supply optional parameter decoder_lags (int) during model creation to customize no. of previous target values 
+to be used for decoding purpose. Minimum decoder_lags = 1, maximum decoder_lags = "length of the encoder series". 
+Default: max(int(len(encoder_timesteps)/4),2) 
+
+````
+

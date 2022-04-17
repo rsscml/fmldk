@@ -2025,11 +2025,11 @@ def VarTransformer_Infer(model, inputs, loss_type, hist_len, f_len, target_index
             encoder_columns_string = []
             decoder_columns_string = []
             for col in stat_columns:
-                stat_columns_string.append(col)
+                stat_columns_string.append(col.numpy().decode("utf-8"))
             for col in encoder_columns:
-                encoder_columns_string.append(col)
+                encoder_columns_string.append(col.numpy().decode("utf-8"))
             for col in decoder_columns:
-                decoder_columns_string.append(col)
+                decoder_columns_string.append(col.numpy().decode("utf-8"))
                 
             stat_wts, encoder_wts, decoder_wts = wts_list
             # Average feature weights across time dim
@@ -2114,11 +2114,11 @@ def VarTransformer_Infer_Piecewise(model, inputs, loss_type, hist_len, f_len, ta
                 encoder_columns_string = []
                 decoder_columns_string = []
                 for col in stat_columns:
-                    stat_columns_string.append(col)
+                    stat_columns_string.append(col.numpy().decode("utf-8"))
                 for col in encoder_columns:
-                    encoder_columns_string.append(col)
+                    encoder_columns_string.append(col.numpy().decode("utf-8"))
                 for col in decoder_columns:
-                    decoder_columns_string.append(col)
+                    decoder_columns_string.append(col.numpy().decode("utf-8"))
                 
                 stat_wts, encoder_wts, decoder_wts = wts_list
                 # Average feature weights across time dim

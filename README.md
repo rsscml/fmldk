@@ -321,7 +321,12 @@ max_static_col_levels (default (int): 100) # If there are too many levels to a s
 ````
 TFT sample usage:
 
-model = Temporal_Fusion_Transformer(col_index_dict = col_index_dict,
+import tft
+
+... tft.tft_dataset
+... tft.supported_losses
+
+model = tft.Temporal_Fusion_Transformer(col_index_dict = col_index_dict,
                                     vocab_dict = vocab,
                                     num_layers = 1,
                                     num_heads = 1,

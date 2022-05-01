@@ -335,6 +335,7 @@ model = tft.Temporal_Fusion_Transformer(col_index_dict = col_index_dict,
                                     max_inp_len = 13,
                                     loss_type = 'Quantile',
                                     num_quantiles=2,
+                                    decoder_start_tokens=4,
                                     dropout_rate=0.1)
 
 model.build()

@@ -1,9 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
-
-
 import numpy as np
 import math as m
 import tensorflow as tf
@@ -14,6 +11,7 @@ import pickle
 import absl.logging
 absl.logging.set_verbosity(absl.logging.ERROR)
 import pandas as pd
+
 
 # Distribution Sampling functions
 
@@ -66,7 +64,7 @@ def GumbelSample(a, b, n_samples=1):
 
 
 # Self-Attention
-def ScaledDotProductAttention(q, k, v, causal_mask, padding_mask):
+def ScaledDotProductAttention(q, k, v, causal_mask):
     matmul_qk = tf.matmul(q, k, transpose_b=True)  # (..., seq_len_q, seq_len_k)
     dk = tf.cast(tf.shape(k)[-1], tf.float32)
     scaled_attention_logits = matmul_qk / tf.math.sqrt(dk)
@@ -74,9 +72,6 @@ def ScaledDotProductAttention(q, k, v, causal_mask, padding_mask):
     # add the mask to the scaled tensor.
     if causal_mask is not None:
         scaled_attention_logits += (causal_mask * -1e9)
-        
-    if padding_mask is not None:
-        scaled_attention_logits += (padding_mask * -1e9)
     
     # softmax is normalized on the last axis (seq_len_k) so that the scores add up to 1.
     attention_weights = tf.nn.softmax(scaled_attention_logits, axis=-1)  # (..., seq_len_q, seq_len_k)
@@ -117,7 +112,7 @@ class TFTMultiHeadAttention(tf.keras.layers.Layer):
 
         self.w_o = tf.keras.layers.Dense(units=d_model, use_bias=False)
 
-    def call(self, q, k, v, causal_mask, padding_mask, training):
+    def call(self, q, k, v, causal_mask, training):
         """
         q: Query tensor of shape=(?, T, d_model)
         k: Key of shape=(?, T, d_model)
@@ -134,7 +129,7 @@ class TFTMultiHeadAttention(tf.keras.layers.Layer):
             qs = self.qs_layers[i](q)
             ks = self.ks_layers[i](k)
             vs = self.vs_layers[i](v)
-            head, attn = ScaledDotProductAttention(qs, ks, vs, causal_mask, padding_mask)
+            head, attn = ScaledDotProductAttention(qs, ks, vs, causal_mask)
             head_dropout = tf.keras.layers.Dropout(self.dropout_rate)(head)
             heads.append(head_dropout)
             attns.append(attn)
@@ -517,9 +512,9 @@ class Attention_Layer(tf.keras.layers.Layer):
                                            activation=None)
         self.add_norm = tft_add_and_norm_layer()
 
-    def call(self, x, causal_mask, padding_mask, training):
+    def call(self, x, causal_mask, training):
 
-        attn_out, _ = self.mha(x, x, x, causal_mask, padding_mask, training=training) # (q,k,v,mask,training)
+        attn_out, _ = self.mha(x, x, x, causal_mask, training=training) # (q,k,v,mask,training)
 
         # gating layer
         attn_out, _ = self.gate(attn_out, training=training)
@@ -543,11 +538,11 @@ class Attention_Stack(tf.keras.layers.Layer):
                                        additional_context=False,
                                        return_gate=False)
 
-    def call(self, x, causal_mask, padding_mask, training):
+    def call(self, x, causal_mask, training):
 
         attn_out = x
         for i in range(self.num_layers):
-            attn_out = self.attn_layers[i](attn_out, causal_mask, padding_mask, training=training)
+            attn_out = self.attn_layers[i](attn_out, causal_mask, training=training)
 
         # final GRN layer
         attn_out = self.grn_final(attn_out, training=training)
@@ -575,6 +570,7 @@ class final_gating_layer(tf.keras.layers.Layer):
         out = self.add_norm([attn_out, temporal_features], training=training)
 
         return out
+
 
 # TFT Model
 
@@ -695,7 +691,7 @@ class TFT(tf.keras.Model):
         mask = causal_mask(self.hist_len + self.f_len)
 
         # Attention stack
-        attn_out = self.self_attention(enriched_features, mask, padding_mask, training=training)
+        attn_out = self.self_attention(enriched_features, mask, training=training)
 
         # pff
         attn_out = self.pff_layer([attn_out, temporal_features], training=training)
@@ -740,6 +736,7 @@ class TFT(tf.keras.Model):
             return out, parameters, stat_weights, past_weights, future_weights
             
 
+
 # TFT Wrapper
 
 class TFT_Model(tf.keras.Model):
@@ -753,7 +750,6 @@ class TFT_Model(tf.keras.Model):
                  max_inp_len,
                  loss_type,
                  num_quantiles=1,
-                 decoder_start_tokens=4,
                  dropout_rate=0.1):
 
         super(TFT_Model, self).__init__()
@@ -770,7 +766,6 @@ class TFT_Model(tf.keras.Model):
         self.max_inp_len = max_inp_len
         self.num_quantiles = num_quantiles
         self.dropout_rate = dropout_rate
-        self.start_token_length = decoder_start_tokens
         
         if (len(self.col_index_dict.get('static_num_indices')[0])==0) and (len(self.col_index_dict.get('static_cat_indices')[0])==0):
             self.static_variables = False
@@ -860,12 +855,12 @@ class TFT_Model(tf.keras.Model):
             for colname in self.stat_num_col_names:
                 self.stat_linear_transform_layers[colname] = tf.keras.layers.Dense(units=d_model, use_bias=False)
         
-        if len(self.known_num_col_names)>=0:
+        if len(self.known_num_col_names)>0:
             self.known_linear_transform_layers = {}
             for colname in self.known_num_col_names + ['rel_age']:
                 self.known_linear_transform_layers[colname] = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=d_model, use_bias=False))
         
-        if len(self.unknown_num_col_names)>=0:
+        if len(self.unknown_num_col_names)>0:
             self.unknown_linear_transform_layers = {}
             for colname in self.unknown_num_col_names + ['rel_age']:
                 self.unknown_linear_transform_layers[colname] = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=d_model, use_bias=False))
@@ -885,15 +880,6 @@ class TFT_Model(tf.keras.Model):
         static_vars_list = []
         encoder_vars_list = [target[:,:self.hist_len,:]]
         decoder_vars_list = []
-        
-        # decoder start token - latest 'n' actuals before start of decoding
-        
-        start_token = target[:,self.hist_len-self.start_token_length:self.hist_len,:]
-        #B, _, _ = tf.shape(start_token)
-        start_token = tf.reshape(start_token, [-1,1,self.start_token_length*self.d_model])
-        start_token = tf.tile(start_token, [1,self.f_len,1])
-        decoder_vars_list.append(start_token)
-        future_cols_ordered_list  = future_cols_ordered_list + ["decoder_start_token"]
         
         # static numeric
         if len(self.stat_num_indices)>0:
@@ -1254,11 +1240,11 @@ def TFT_Infer(model, inputs, loss_type, hist_len, f_len, target_index, num_quant
     encoder_columns_string = []
     decoder_columns_string = []
     for col in stat_columns:
-        stat_columns_string.append(col.numpy().decode("utf-8")) 
+        stat_columns_string.append(col) 
     for col in encoder_columns:
-        encoder_columns_string.append(col.numpy().decode("utf-8"))
+        encoder_columns_string.append(col)
     for col in decoder_columns:
-        decoder_columns_string.append(col.numpy().decode("utf-8"))
+        decoder_columns_string.append(col)
                 
     stat_wts, encoder_wts, decoder_wts = wts_list
 
@@ -1323,7 +1309,6 @@ class Temporal_Fusion_Transformer:
                  max_inp_len,
                  loss_type,
                  num_quantiles=1,
-                 decoder_start_tokens=4,
                  dropout_rate=0.1):
         
         self.col_index_dict = col_index_dict
@@ -1336,7 +1321,6 @@ class Temporal_Fusion_Transformer:
         self.loss_type = loss_type
         self.num_quantiles = num_quantiles
         self.dropout_rate = dropout_rate
-        self.decoder_start_tokens = decoder_start_tokens
         self.target_col_name, self.target_index = self.col_index_dict.get('target_index')
     
     def build(self):
@@ -1350,7 +1334,6 @@ class Temporal_Fusion_Transformer:
                                   self.max_inp_len,
                                   self.loss_type,
                                   self.num_quantiles,
-                                  self.decoder_start_tokens,
                                   self.dropout_rate)
         
     def train(self, 
@@ -1401,4 +1384,4 @@ class Temporal_Fusion_Transformer:
         forecast, stat_wts_df, encoder_wts_df, decoder_wts_df = TFT_Infer(self.model, inputs, self.loss_type, self.max_inp_len, self.forecast_horizon, self.target_index, self.num_quantiles)
         
         return forecast, [stat_wts_df, encoder_wts_df, decoder_wts_df]
-
+       

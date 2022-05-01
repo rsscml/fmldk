@@ -1622,12 +1622,12 @@ class VarTransformer_Model(tf.keras.Model):
             for colname in self.stat_num_col_names:
                 self.stat_linear_transform_layers[colname] = tf.keras.layers.Dense(units=d_model, use_bias=False)
         
-        if len(self.known_num_col_names)>0:
+        if len(self.known_num_col_names)>=0:
             self.known_linear_transform_layers = {}
             for colname in self.known_num_col_names + ['rel_age']:
                 self.known_linear_transform_layers[colname] = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=d_model, use_bias=False))
         
-        if len(self.unknown_num_col_names)>0:
+        if len(self.unknown_num_col_names)>=0:
             self.unknown_linear_transform_layers = {}
             for colname in self.unknown_num_col_names + ['rel_age']:
                 self.unknown_linear_transform_layers[colname] = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=d_model, use_bias=False))

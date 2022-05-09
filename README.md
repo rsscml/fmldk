@@ -348,3 +348,32 @@ Default: max(int(len(encoder_timesteps)/4),2)
 
 ````
 
+### New in 0.1.28 - STCTN
+````
+STCTN sample usage:
+
+import stctn
+
+... stctn.stctn_dataset
+... stctn.supported_losses
+
+model = stctn.Spatial_Temporal_Transformer(col_index_dict = col_index_dict,
+                                    vocab_dict = vocab,
+                                    num_layers = 4,
+                                    num_heads = 1,
+                                    d_model = 16,
+                                    temporal_kernel_size_list = [1,2,3,4],
+                                    spatial_kernel_size = 3,
+                                    num_shuffle = 20,
+                                    forecast_horizon = 13,
+                                    max_inp_len = 13,
+                                    loss_type = 'Point',
+                                    num_quantiles=1,
+                                    dropout_rate=0.1)
+
+model.build()
+
+Train & Infer methods are identical to other transformers.
+
+````
+

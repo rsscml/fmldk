@@ -348,7 +348,7 @@ Default: max(int(len(encoder_timesteps)/4),2)
 
 ````
 
-### New in 0.1.28 - STCTN
+### New in 0.1.28 - STCTN, ConvTFR
 ````
 STCTN sample usage:
 
@@ -374,6 +374,29 @@ model = stctn.Spatial_Temporal_Transformer(col_index_dict = col_index_dict,
 model.build()
 
 Train & Infer methods are identical to other transformers.
+
+
+ConvTFR usage:
+
+import ctfr
+
+... ctfr.ctfr_dataset
+... ctfr.supported_losses
+
+var_model = Feature_Weighted_ConvTransformer(col_index_dict = col_index_dict,
+                               vocab_dict = vocab,
+                               num_layers = 2,
+                               num_heads = 4,
+                               kernel_sizes = [1,3,5],
+                               d_model = 32,
+                               forecast_horizon = 13,
+                               max_inp_len = 13,
+                               loss_type = 'Quantile',
+                               num_quantiles = 1,             
+                               decoder_lags = 2,          
+                               dropout_rate=0.1)
+
+var_model.build()
 
 ````
 

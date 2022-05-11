@@ -160,7 +160,7 @@ class LocalRangeConvAttention(tf.keras.layers.Layer):
                                              data_format='channels_last')
             
             v_layer = tf.keras.layers.Conv1D(filters=self.d_model, 
-                                             kernel_size=k, 
+                                             kernel_size=1,
                                              strides=1, 
                                              padding='causal', 
                                              data_format='channels_last')
@@ -241,7 +241,10 @@ class GroupRangeConvAttention(tf.keras.layers.Layer):
         self.s = 1
         self.m = num_shuffle
         self.N = num_vars
-        self.Ng = int(self.N/self.k) + 1
+        if self.N % self.k == 0:
+            self.Ng = max(int(self.N/self.k), 1)
+        else:
+            self.Ng = int(self.N / self.k) + 1
         self.conv_layer_list = [tf.keras.layers.Conv1D(filters=self.d_model, 
                                                        kernel_size=self.k, 
                                                        strides=self.s,

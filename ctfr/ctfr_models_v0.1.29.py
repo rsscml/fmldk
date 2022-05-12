@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+# In[1]:
+
 
 import numpy as np
 import math as m
@@ -683,7 +685,6 @@ class all_variable_select_concat_layer(tf.keras.layers.Layer):
         tfr_input = tf.reshape(combined, [batch_size, timesteps, -1]) #[batch,time_steps,hidden_layers_size]
         
         return tfr_input, dynamic_weights   
-
 
 # Variable Weighted Transformer Model
 
@@ -1404,48 +1405,6 @@ def ConvTransformer_Infer(model, inputs, loss_type, hist_len, f_len, target_inde
     return forecast_df
 
 
-def ConvTransformer_InferRecursive(model, inputs, loss_type, hist_len, f_len, target_index, num_quantiles):
-    infer_tensor, scale, id_arr, date_arr = inputs
-    scale = scale[:,-1:,-1]
-    window_len = hist_len + f_len
-    output = []
-    
-    for i in range(f_len):
-        out, dist = model(infer_tensor, training=False)
-            
-        # update target
-        if loss_type in ['Normal','Poisson','Negbin']:
-            dist = dist.numpy()
-            output.append(dist[:,i:i+1,0])
-            infer_arr = infer_tensor.numpy()
-            infer_arr[:,hist_len:hist_len+i+1,target_index] = out[:,0:i+1,0]/scale
-        elif loss_type in ['Point','Quantile']:
-            out = out.numpy()
-            output.append(out[:,i:i+1,0])
-            infer_arr = infer_tensor.numpy()
-            infer_arr[:,hist_len:hist_len+i+1,target_index] = out[:,0:i+1,0]
-            
-        # feedback updated hist + fh tensor
-        infer_tensor = tf.convert_to_tensor(np.char.decode(infer_arr.astype(np.bytes_), 'UTF-8'), dtype=tf.string)
-                    
-    output_arr = np.concatenate(output, axis=1) 
-        
-    # rescale if necessary
-    if loss_type in ['Normal','Poisson','Negbin']:
-        output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr), axis=1))
-    elif loss_type in ['Point','Quantile']:
-        output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr*scale.reshape(-1,1)), axis=1))
-    output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0:'id','value':'forecast'})
-    output_df = output_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
-        
-    # merge date_columns
-    date_df = pd.DataFrame(date_arr.reshape(-1,)).rename(columns={0:'period'})
-    forecast_df = pd.concat([date_df, output_df], axis=1)
-    forecast_df['forecast'] = forecast_df['forecast'].astype(np.float32)
-        
-    return forecast_df
-
-
 class Simple_ConvTransformer:
     def __init__(self, 
                  col_index_dict,
@@ -1534,14 +1493,15 @@ class Simple_ConvTransformer:
         tf.keras.backend.clear_session()
         self.model = tf.keras.models.load_model(model_path)
         
-    def infer(self, inputs, recursive_decode=False):
-        if not recursive_decode:
-            forecast = ConvTransformer_Infer(self.model, inputs, self.loss_type, self.max_inp_len, self.forecast_horizon, self.target_index, self.num_quantiles)
-        else:
-            forecast = ConvTransformer_InferRecursive(self.model, inputs, self.loss_type, self.max_inp_len, self.forecast_horizon, self.target_index, self.num_quantiles)
+    def infer(self, inputs):
+        forecast = ConvTransformer_Infer(self.model, inputs, self.loss_type, self.max_inp_len, self.forecast_horizon, self.target_index, self.num_quantiles)
         
         return forecast     
                 
+
+
+# In[8]:
+
 
 # VarTransformer Wrapper
 
@@ -2131,79 +2091,7 @@ def ConvVarTransformer_Infer(model, inputs, loss_type, hist_len, f_len, target_i
     return forecast_df, stat_wts_df, encoder_wts_df, decoder_wts_df
 
 
-def ConvVarTransformer_InferRecursive(model, inputs, loss_type, hist_len, f_len, target_index, num_quantiles):
-    infer_tensor, scale, id_arr, date_arr = inputs
-    scale = scale[:,-1:,-1]
-    window_len = hist_len + f_len
-    output = []
-    stat_wts_df = None 
-    encoder_wts_df = None 
-    decoder_wts_df = None
-        
-    for i in range(f_len):
-        out, dist, feature_wts = model(infer_tensor, training=False)
-            
-        # update target
-        if loss_type in ['Normal','Poisson','Negbin']:
-            dist = dist.numpy()
-            output.append(dist[:,i:i+1,0])
-            infer_arr = infer_tensor.numpy()
-            infer_arr[:,hist_len:hist_len+i+1,target_index] = out[:,0:i+1,0]/scale
-        elif loss_type in ['Point','Quantile']:
-            out = out.numpy()
-            output.append(out[:,i:i+1,0])
-            infer_arr = infer_tensor.numpy()
-            infer_arr[:,hist_len:hist_len+i+1,target_index] = out[:,0:i+1,0]
-            
-        # feedback updated hist + fh tensor
-        infer_tensor = tf.convert_to_tensor(np.char.decode(infer_arr.astype(np.bytes_), 'UTF-8'), dtype=tf.string)
-            
-        if i == (f_len - 1):
-            column_names_list, wts_list = feature_wts
-            stat_columns, encoder_columns, decoder_columns = column_names_list
-            stat_columns_string = []
-            encoder_columns_string = []
-            decoder_columns_string = []
-            for col in stat_columns:
-                stat_columns_string.append(col.numpy().decode("utf-8")) 
-            for col in encoder_columns:
-                encoder_columns_string.append(col.numpy().decode("utf-8"))
-            for col in decoder_columns:
-                decoder_columns_string.append(col.numpy().decode("utf-8"))
-                
-            stat_wts, encoder_wts, decoder_wts = wts_list
-            # Average feature weights across time dim
-            encoder_wts = encoder_wts.numpy()
-            decoder_wts = decoder_wts.numpy()
-            # convert wts to df    
-            encoder_wts_df = pd.DataFrame(encoder_wts, columns=encoder_columns_string)   
-            decoder_wts_df = pd.DataFrame(decoder_wts, columns=decoder_columns_string)    
-            if stat_wts is not None:
-                stat_wts = stat_wts.numpy()
-                stat_wts_df = pd.DataFrame(stat_wts, columns=stat_columns_string)   
-            
-    output_arr = np.concatenate(output, axis=1) 
-        
-    # rescale if necessary
-    if loss_type in ['Normal','Poisson','Negbin']:
-        output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr), axis=1))
-    elif loss_type in ['Point','Quantile']:
-        output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr*scale.reshape(-1,1)), axis=1))
-    output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0:'id','value':'forecast'})
-    output_df = output_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
-        
-    # merge date_columns
-    date_df = pd.DataFrame(date_arr.reshape(-1,)).rename(columns={0:'period'})
-    forecast_df = pd.concat([date_df, output_df], axis=1)
-    forecast_df['forecast'] = forecast_df['forecast'].astype(np.float32)
-        
-    # weights df merge with id
-    stat_wts_df = pd.concat([pd.DataFrame(id_arr.reshape(-1,1)), stat_wts_df], axis=1)
-    encoder_wts_df = pd.concat([pd.DataFrame(id_arr.reshape(-1,1)), encoder_wts_df], axis=1)
-    decoder_wts_df = pd.concat([pd.DataFrame(id_arr.reshape(-1,1)), decoder_wts_df], axis=1)
-    print(stat_wts_df.shape, encoder_wts_df.shape, decoder_wts_df.shape)
-        
-    return forecast_df, stat_wts_df, encoder_wts_df, decoder_wts_df
+# In[9]:
 
 
 class Feature_Weighted_ConvTransformer:
@@ -2294,14 +2182,16 @@ class Feature_Weighted_ConvTransformer:
         tf.keras.backend.clear_session()
         self.model = tf.keras.models.load_model(model_path)
         
-    def infer(self, inputs, recursive_decode=False):
-        if not recursive_decode:
-            forecast, stat_wts_df, encoder_wts_df, decoder_wts_df = ConvVarTransformer_Infer(self.model, inputs, self.loss_type, self.max_inp_len, self.forecast_horizon, self.target_index, self.num_quantiles)
-        else:
-            forecast, stat_wts_df, encoder_wts_df, decoder_wts_df = ConvVarTransformer_InferRecursive(self.model, inputs, self.loss_type, self.max_inp_len, self.forecast_horizon, self.target_index, self.num_quantiles)
+    def infer(self, inputs):
+        forecast, stat_wts_df, encoder_wts_df, decoder_wts_df = ConvVarTransformer_Infer(self.model, inputs, self.loss_type, self.max_inp_len, self.forecast_horizon, self.target_index, self.num_quantiles)
         
         return forecast, [stat_wts_df, encoder_wts_df, decoder_wts_df]
     
+    
+
+
+# In[ ]:
+
 
 
 

@@ -1,8 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
-
 
 import numpy as np
 import math as m
@@ -10,12 +8,6 @@ import tensorflow as tf
 import tensorflow_probability as tfp
 tfd = tfp.distributions
 import pprint
-
-
-# In[2]:
-
-
-# NLL Functions
 
 # Negbin Loss
 @tf.function(experimental_relax_shapes=True)
@@ -74,9 +66,6 @@ def Gumbel_loss(actual, a, b):
     return tf.reduce_mean(nll)
 
 
-# In[3]:
-
-
 # Keras Custom Loss Subclasses -- Quantile Loss, RMSSE, RMSE, Negbin_NLL_Loss, Normal_NLL_Loss, Poisson_NLL_Loss, Gumbel_NLL_Loss
 
 class QuantileLoss(tf.keras.losses.Loss):
@@ -133,13 +122,8 @@ class QuantileLoss_v2(tf.keras.losses.Loss):
         else:
             wts = 1.0
             predictions = output
-        
-        seq_len = tf.shape(predictions)[1]
-        
         y_pred = tf.cast(predictions, tf.float32)
-        #y_true = tf.cast(tf.squeeze(actuals), tf.float32)
-        y_true = tf.cast(tf.reshape(actuals, [-1,seq_len]), tf.float32)
-        
+        y_true = tf.cast(tf.squeeze(actuals), tf.float32)
         losses = tf.cast(tf.zeros_like(y_true), tf.float32)
         for i,q in enumerate(self.quantiles):
             losses += self.compute_quantile_loss(y_true, y_pred[:,:,i], q)*self.quantile_weights[i]
@@ -176,14 +160,8 @@ class RMSSELoss(tf.keras.losses.Loss):
         super().__init__(** kwargs)
     
     def call(self, actuals, predictions):
-        seq_len_pred = tf.shape(predictions)[1]
-        seq_len_act = tf.shape(actuals)[1]
-
-        # pred = tf.cast(tf.squeeze(predictions), tf.float32)
-        pred = tf.cast(tf.reshape(predictions, [-1, seq_len_pred]), tf.float32)
-        # true = tf.cast(tf.squeeze(actuals), tf.float32)
-        true = tf.cast(tf.reshape(actuals, [-1, seq_len_act]), tf.float32)
-        
+        pred = tf.cast(tf.squeeze(predictions), tf.float32)
+        true = tf.cast(tf.squeeze(actuals), tf.float32)
         true_fh = true[:,-self.fh:]
         true_in = true[:,1:self.sl]
         true_in_lag = true[:,0:self.sl-1]
@@ -210,13 +188,8 @@ class RMSE(tf.keras.losses.Loss):
         else:
             wts = 1.0
             output = pred
-            
-        seq_len = tf.shape(output)[1]    
-        #output = tf.cast(tf.squeeze(output), tf.float32)
-        output = tf.cast(tf.reshape(output, [-1,seq_len]), tf.float32)
-        #true = tf.cast(tf.squeeze(actuals), tf.float32)
-        true = tf.cast(tf.reshape(actuals,[-1,seq_len]), tf.float32)
-        
+        output = tf.cast(tf.squeeze(output), tf.float32)
+        true = tf.cast(tf.squeeze(actuals), tf.float32)
         error = wts*tf.reduce_mean(tf.math.square(tf.abs(true - output)), axis=1, keepdims=True)
         rmse = tf.math.sqrt(error)
         return tf.reduce_mean(rmse)
@@ -240,13 +213,8 @@ class Huber(tf.keras.losses.Loss):
         else:
             wts = 1.0
             output = pred
-        seq_len = tf.shape(output)[1]    
-        
-        #output = tf.cast(tf.squeeze(output), tf.float32)
-        output = tf.cast(tf.reshape(output, [-1,seq_len]), tf.float32)
-        #true = tf.cast(tf.squeeze(actuals), tf.float32)
-        true = tf.cast(tf.reshape(actuals,[-1,seq_len]), tf.float32)
-        
+        output = tf.cast(tf.squeeze(output), tf.float32)
+        true = tf.cast(tf.squeeze(actuals), tf.float32)
         if self.sample_weights:
             loss = self.loss_fn.__call__(true, output, wts)
         else:
@@ -350,9 +318,6 @@ class Students_NLL_Loss(tf.keras.losses.Loss):
         return {** base_config}      
 
 
-# In[12]:
-
-
 supported_losses = {'RMSE': ['loss_type: Point', 'Usage: RMSE(sample_weights=False)'],
                     'Huber': ['loss_type: Point', 'Usage: Huber(delta=1.0, sample_weights=False)'],
                     'Quantile': ['loss_type: Quantile', 'Usage: QuantileLoss_v2(quantiles=[0.5], sample_weights=False)'], 
@@ -364,9 +329,6 @@ supported_losses = {'RMSE': ['loss_type: Point', 'Usage: RMSE(sample_weights=Fal
 #print("Supported Loss Functions & Typical Usage:")
 #print("-----------------------------------------")
 #pprint.pprint(supported_losses)
-
-
-# In[ ]:
 
 
 

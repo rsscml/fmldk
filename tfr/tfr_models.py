@@ -1613,7 +1613,7 @@ class VarTransformer_Model(tf.keras.Model):
         decoder_vars_list = []
         
         past_cols_ordered_list = past_cols_ordered_list + [self.target_col_name]
-        future_cols_ordered_list = future_cols_ordered_list + [self.target_col_name]
+        #future_cols_ordered_list = future_cols_ordered_list + [self.target_col_name]
         
         # decoder start token
         if self.decoder_lags >= 1:

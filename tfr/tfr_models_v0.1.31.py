@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+# In[1]:
+
 
 import numpy as np
 import math as m
@@ -12,6 +14,10 @@ import pickle
 import absl.logging
 absl.logging.set_verbosity(absl.logging.ERROR)
 import pandas as pd
+
+
+# In[ ]:
+
 
 # Distribution Sampling functions
 
@@ -107,93 +113,7 @@ def scaled_dot_product_attention(q, k, v, mask):
     output = tf.matmul(attention_weights, v)  # (..., seq_len_q, depth_v)
 
     return output, attention_weights
-
-
-# Temporal Conv Self-Attention
-
-class MultiHeadConvAttention(tf.keras.layers.Layer):
-    def __init__(self, d_model, num_heads, kernel_sizes):
-        
-        super(MultiHeadConvAttention, self).__init__()
-        
-        self.d_model = d_model
-        self.num_heads = num_heads
-        self.kernel_sizes = kernel_sizes
-        
-        assert d_model % self.num_heads == 0
-        self.depth = d_model // self.num_heads
-        
-        # Obtain Q,K,V for multiple kernel sizes
-        self.causal_conv_list_of_lists = []
-        
-        for k in self.kernel_sizes:
-            q_layer = tf.keras.layers.Conv1D(filters=self.d_model, 
-                                             kernel_size=k, 
-                                             strides=1, 
-                                             padding='causal', 
-                                             data_format='channels_last')
-            
-            k_layer = tf.keras.layers.Conv1D(filters=self.d_model, 
-                                             kernel_size=k, 
-                                             strides=1, 
-                                             padding='causal', 
-                                             data_format='channels_last')
-            
-            v_layer = tf.keras.layers.Conv1D(filters=self.d_model, 
-                                             kernel_size=1, 
-                                             strides=1,
-                                             data_format='channels_last')
-            
-            self.causal_conv_list_of_lists.append([q_layer, k_layer, v_layer])
-        
-        self.linear_projection = tf.keras.layers.Dense(self.d_model)
-    
-    def split_heads(self, x, batch_size):
-        
-        x = tf.reshape(x, (batch_size, -1, self.num_heads, self.depth))
-        return tf.transpose(x, perm=[0, 2, 1, 3])
-            
-    def call(self, value, key, query, mask, training):
-        
-        batch_size = tf.shape(query)[0]
-        
-        attention_out_list = []
-        attention_weights_list = []
-        for k, layer_list in enumerate(self.causal_conv_list_of_lists):
-            
-            # apply conv layers
-            q = layer_list[0](query, training=training) # (Batch, seq_len_q, d_model)
-            k = layer_list[1](key, training=training) # (Batch, seq_len_k, d_model)
-            v = layer_list[2](value, training=training) # (Batch, seq_len_v, d_model)
-            
-            # split heads
-            q = self.split_heads(q, batch_size)  # (batch_size, num_heads, seq_len_q, depth)
-            k = self.split_heads(k, batch_size)  # (batch_size, num_heads, seq_len_k, depth)
-            v = self.split_heads(v, batch_size)  # (batch_size, num_heads, seq_len_v, depth)
-    
-            # Apply self attention
-            scaled_attention, attention_weights = scaled_dot_product_attention(q, k, v, mask) # (batch_size, num_heads, seq_len_q, depth)
-            scaled_attention = tf.transpose(scaled_attention, perm=[0, 2, 1, 3])  # (batch_size, seq_len_q, num_heads, depth)
-            concat_attention = tf.reshape(scaled_attention, (batch_size, -1, self.d_model))  # (batch_size, seq_len_q, d_model)
-
-            # append to list for concatentation later
-            attention_out_list.append(concat_attention)
-            attention_weights_list.append(attention_weights)
-            
-        # Attention o/p for variable v
-        output = tf.stack(attention_out_list, axis=1)                # (Batch, k, seq_len_q, d_model)
-        output = tf.math.reduce_mean(output, axis=1, keepdims=False) # (Batch, seq_len_q, d_model)
-        
-        # mean of attention weights
-        attention_weights = tf.stack(attention_weights_list, axis=1) # (batch_size, k, num_heads, seq_len_q, depth)
-        attention_weights = tf.math.reduce_mean(attention_weights, axis=1, keepdims=False) # (batch_size, num_heads, seq_len_q, depth)
-            
-        # Linear Projection: (Batch, T, d_model)
-        output = self.linear_projection(output, training=training)
-       
-        return output, attention_weights
-    
-
+  
 # Multi-Head Self-Attention
 
 class MultiHeadAttention(tf.keras.layers.Layer):
@@ -249,14 +169,14 @@ def point_wise_feed_forward_network(d_model, dff):
     return tf.keras.Sequential([tf.keras.layers.Dense(dff, activation='relu'),  # (batch_size, seq_len, dff)
                                 tf.keras.layers.Dense(d_model)  # (batch_size, seq_len, d_model)
                                ])
-    
-# Encoder Layer - Conv Attention
 
-class ConvEncoderLayer(tf.keras.layers.Layer):
-    def __init__(self, d_model, num_heads, kernel_sizes, dff, rate):
-        super(ConvEncoderLayer, self).__init__()
+# Encoder Layer
 
-        self.mha = MultiHeadConvAttention(d_model, num_heads, kernel_sizes)
+class EncoderLayer(tf.keras.layers.Layer):
+    def __init__(self, d_model, num_heads, dff, rate=0.1):
+        super(EncoderLayer, self).__init__()
+
+        self.mha = MultiHeadAttention(d_model, num_heads)
         self.ffn = point_wise_feed_forward_network(d_model, dff)
 
         self.layernorm1 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
@@ -269,23 +189,22 @@ class ConvEncoderLayer(tf.keras.layers.Layer):
 
         attn_output, _ = self.mha(x, x, x, mask, training=training)  # (batch_size, input_seq_len, d_model)
         attn_output = self.dropout1(attn_output, training=training)
-        out1 = self.layernorm1(x + attn_output)                      # (batch_size, input_seq_len, d_model)
+        out1 = self.layernorm1(x + attn_output)  # (batch_size, input_seq_len, d_model)
     
-        ffn_output = self.ffn(out1, training=training)               # (batch_size, input_seq_len, d_model)
+        ffn_output = self.ffn(out1, training=training)  # (batch_size, input_seq_len, d_model)
         ffn_output = self.dropout2(ffn_output, training=training)
-        out2 = self.layernorm2(out1 + ffn_output)                    # (batch_size, input_seq_len, d_model)
+        out2 = self.layernorm2(out1 + ffn_output)  # (batch_size, input_seq_len, d_model)
     
         return out2
 
+# Decoder Layer
 
-# Decoder Layer - Conv Attention
+class DecoderLayer(tf.keras.layers.Layer):
+    def __init__(self, d_model, num_heads, dff, rate=0.1):
+        super(DecoderLayer, self).__init__()
 
-class ConvDecoderLayer(tf.keras.layers.Layer):
-    def __init__(self, d_model, num_heads, kernel_sizes, dff, rate):
-        super(ConvDecoderLayer, self).__init__()
-
-        self.mha1 = MultiHeadConvAttention(d_model, num_heads, kernel_sizes)
-        self.mha2 = MultiHeadConvAttention(d_model, num_heads, kernel_sizes)
+        self.mha1 = MultiHeadAttention(d_model, num_heads)
+        self.mha2 = MultiHeadAttention(d_model, num_heads)
 
         self.ffn = point_wise_feed_forward_network(d_model, dff)
  
@@ -314,19 +233,18 @@ class ConvDecoderLayer(tf.keras.layers.Layer):
     
         return out3, attn_weights_block1, attn_weights_block2
 
+# Encoder Module
 
-# Conv Encoder Module
-
-class ConvEncoder(tf.keras.layers.Layer):
-    def __init__(self, num_layers, d_model, num_heads, kernel_sizes, dff, maximum_position_encoding, rate):
-        super(ConvEncoder, self).__init__()
+class Encoder(tf.keras.layers.Layer):
+    def __init__(self, num_layers, d_model, num_heads, dff, maximum_position_encoding, rate=0.1):
+        super(Encoder, self).__init__()
 
         self.d_model = d_model
         self.num_layers = num_layers
     
         self.pos_encoding = positional_encoding(maximum_position_encoding, self.d_model)
-        
-        self.enc_layers = [ConvEncoderLayer(d_model, num_heads, kernel_sizes, dff, rate) for _ in range(num_layers)]
+    
+        self.enc_layers = [EncoderLayer(d_model, num_heads, dff, rate) for _ in range(num_layers)]
   
         self.dropout = tf.keras.layers.Dropout(rate)
         
@@ -336,27 +254,26 @@ class ConvEncoder(tf.keras.layers.Layer):
     
         # adding position encoding.
         x += self.pos_encoding[:, :seq_len, :]
-        
+
         x = self.dropout(x, training=training)
     
         for i in range(self.num_layers):
             x = self.enc_layers[i](x, mask, training=training)
     
         return x  # (batch_size, input_seq_len, d_model)
+    
+# Decoder Module
 
-# Conv Decoder Module
-
-class ConvDecoder(tf.keras.layers.Layer):
-    def __init__(self, num_layers, d_model, num_heads, kernel_sizes, dff, maximum_position_encoding, rate):
-        super(ConvDecoder, self).__init__()
+class Decoder(tf.keras.layers.Layer):
+    def __init__(self, num_layers, d_model, num_heads, dff, maximum_position_encoding, rate=0.1):
+        super(Decoder, self).__init__()
 
         self.d_model = d_model
         self.num_layers = num_layers
     
         self.pos_encoding = positional_encoding(maximum_position_encoding, d_model)
-        
-        self.dec_layers = [ConvDecoderLayer(d_model, num_heads, kernel_sizes, dff, rate) for _ in range(num_layers)]
-        
+    
+        self.dec_layers = [DecoderLayer(d_model, num_heads, dff, rate) for _ in range(num_layers)]
         self.dropout = tf.keras.layers.Dropout(rate)
     
     def call(self, x, enc_output, look_ahead_mask, padding_mask, training):
@@ -376,8 +293,7 @@ class ConvDecoder(tf.keras.layers.Layer):
     
         # x.shape == (batch_size, target_seq_len, d_model)
         return x, attention_weights
-    
-    
+
 # GRN & Gating
 
 class linear_layer(tf.keras.layers.Layer):
@@ -687,30 +603,27 @@ class all_variable_select_concat_layer(tf.keras.layers.Layer):
 
 # Variable Weighted Transformer Model
 
-class ConvVarTransformer(tf.keras.Model):
+class VarTransformer(tf.keras.Model):
     def __init__(self,
                  static_variables,
                  num_layers,
                  d_model,
-                 num_heads,
-                 kernel_sizes,
+                 num_heads, 
                  dff,
                  hist_len, 
                  f_len,
                  loss_fn,
                  num_quantiles,
                  rate=0.1):
-        super(ConvVarTransformer, self).__init__()
+        super(VarTransformer, self).__init__()
         
         self.hist_len = hist_len
         self.f_len = f_len
         self.loss_fn = loss_fn
         self.stat_variables = static_variables
-        self.num_quantiles = num_quantiles
         self.seq_len = hist_len + f_len
-        
-        self.encoder = ConvEncoder(num_layers, d_model, num_heads, kernel_sizes, dff, self.seq_len, rate)
-        self.decoder = ConvDecoder(num_layers, d_model, num_heads, kernel_sizes, dff, self.seq_len, rate)
+        self.encoder = Encoder(num_layers, d_model, num_heads, dff, self.seq_len, rate)
+        self.decoder = Decoder(num_layers, d_model, num_heads, dff, self.seq_len, rate)
         
         if self.stat_variables:
             self.static_input_layer = static_variable_selection_layer(hidden_layer_size=d_model, output_size=None, dropout_rate=rate)
@@ -727,9 +640,7 @@ class ConvVarTransformer(tf.keras.Model):
         elif self.loss_fn == 'Poisson':
             self.final_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1, activation='softplus'))
         elif self.loss_fn == 'Quantile':
-            self.proj_intrcpt = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1, activation=None))
-            if self.num_quantiles > 1:
-                self.proj_incrmnt = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=self.num_quantiles-1, activation='softplus'))
+            self.quantile_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=num_quantiles))
         elif self.loss_fn == 'Normal':
             self.m_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1))
             self.s_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1, activation='softplus'))
@@ -788,10 +699,7 @@ class ConvVarTransformer(tf.keras.Model):
             parameters = mean
             out = poisson_sample(mu=mean)
         elif self.loss_fn == 'Quantile':
-            if self.num_quantiles > 1:
-                out = tf.math.cumsum(tf.concat([self.proj_intrcpt(dec_output, training=training), self.proj_incrmnt(dec_output, training=training)], axis=-1), axis=-1)
-            else:
-                out = self.proj_intrcpt(dec_output, training=training)
+            out = self.quantile_layer(dec_output, training=training)
         elif self.loss_fn == 'Normal':
             mean = self.m_layer(dec_output, training=training)*scale       # (batch, f_len, 1)
             stddev = self.s_layer(dec_output, training=training)*scale      # (batch, f_len, 1)
@@ -810,30 +718,27 @@ class ConvVarTransformer(tf.keras.Model):
         else:
             return out, parameters, static_weights, encoder_weights, decoder_weights
 
-
 # Transformer Base Model
 
-class ConvTransformer(tf.keras.Model):
+class Transformer(tf.keras.Model):
     def __init__(self,
                  num_layers,
                  d_model,
-                 num_heads,
-                 kernel_sizes,
+                 num_heads, 
                  dff, 
                  hist_len, 
                  f_len,
                  loss_fn,
                  num_quantiles,
-                 rate):
-        super(ConvTransformer, self).__init__()
+                 rate=0.1):
+        super(Transformer, self).__init__()
         
         self.hist_len = hist_len
         self.loss_fn = loss_fn
-        self.num_quantiles = num_quantiles
         self.seq_len = hist_len + f_len
         
-        self.encoder = ConvEncoder(num_layers, d_model, num_heads, kernel_sizes, dff, self.seq_len, rate)
-        self.decoder = ConvDecoder(num_layers, d_model, num_heads, kernel_sizes, dff, self.seq_len, rate)
+        self.encoder = Encoder(num_layers, d_model, num_heads, dff, self.seq_len, rate)
+        self.decoder = Decoder(num_layers, d_model, num_heads, dff, self.seq_len, rate)
         
         self.encoder_input_layer = tf.keras.layers.Conv1D(filters=d_model, kernel_size=1, strides=1, use_bias=False)
         
@@ -846,9 +751,8 @@ class ConvTransformer(tf.keras.Model):
         elif self.loss_fn == 'Poisson':
             self.final_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1, activation='softplus'))
         elif self.loss_fn == 'Quantile':
-            self.proj_intrcpt = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1, activation=None))
-            if self.num_quantiles > 1:
-                self.proj_incrmnt = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=self.num_quantiles-1, activation='softplus'))
+            self.quantile_layers = [tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1, activation=None)) 
+                                    for _ in range(num_quantiles)]
         elif self.loss_fn == 'Normal':
             self.m_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1))
             self.s_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1, activation='softplus'))
@@ -891,31 +795,30 @@ class ConvTransformer(tf.keras.Model):
             parameters = tf.concat([mean, alpha], axis=-1)
             out = negbin_sample(mean, alpha)
         elif self.loss_fn == 'Quantile':
-            if self.num_quantiles > 1:
-                out = tf.math.cumsum(tf.concat([self.proj_intrcpt(dec_output, training=training), self.proj_incrmnt(dec_output, training=training)], axis=-1), axis=-1)
-            else:
-                out = self.proj_intrcpt(dec_output, training=training)
+            output = []
+            for i in range(len(self.quantile_layers)):
+                out = self.quantile_layers[i](dec_output, training=training)
+                output.append(out)
+            out = tf.concat(output, axis=-1)
           
         if self.loss_fn == 'Point' or self.loss_fn == 'Binary' or self.loss_fn == 'Quantile':
             return out, scale
         else:
             return out, parameters
 
-
 # Transformer Wrapper
 
-class ConvTransformer_Model(tf.keras.Model):
+class Transformer_Model(tf.keras.Model):
     def __init__(self,
                  col_index_dict,
                  vocab_dict,
                  num_layers,
                  num_heads,
-                 kernel_sizes,
                  d_model,
                  forecast_horizon,
                  max_inp_len,
                  loss_type,
-                 num_quantiles,
+                 num_quantiles=1,
                  decoder_lags='Default',
                  dropout_rate=0.1):
         """
@@ -927,11 +830,13 @@ class ConvTransformer_Model(tf.keras.Model):
         forecast_horizon: No. of periods ahead of the forecast cut-off period (Point at which forecast is generated)
         max_inp_len: Max. no. of periods before the forecast cut-off period
         loss_type: One of ['Point','Quantile','Normal','Poisson','Negbin']
+        num_quantiles: Only required if 
+        quantiles:
         dropout_rate:
         learning_rate:
         
         """
-        super(ConvTransformer_Model, self).__init__()
+        super(Transformer_Model, self).__init__()
 
         self.hist_len = int(max_inp_len)
         self.f_len = int(forecast_horizon)
@@ -940,22 +845,18 @@ class ConvTransformer_Model(tf.keras.Model):
         self.vocab_dict = vocab_dict
         self.num_layers = num_layers
         self.num_heads = num_heads
-        self.kernel_sizes = kernel_sizes
         self.d_model = d_model
         self.forecast_horizon = forecast_horizon
         self.max_inp_len = max_inp_len
         self.dropout_rate = dropout_rate
-        self.num_quantiles = num_quantiles
-        
         if decoder_lags == 'Default':
-            self.decoder_lags = max(int(self.hist_len/4), 2)
+            self.decoder_lags = max(int(self.hist_len / 4), 2)
         else:
             self.decoder_lags = max(int(decoder_lags), 1)
         
-        self.model = ConvTransformer(num_layers=num_layers,
+        self.model = Transformer(num_layers=num_layers,
                                  d_model=d_model,
                                  num_heads=num_heads,
-                                 kernel_sizes = kernel_sizes,
                                  dff=int(2*d_model),
                                  hist_len=max_inp_len,
                                  f_len=forecast_horizon,
@@ -1034,11 +935,10 @@ class ConvTransformer_Model(tf.keras.Model):
         
         # decoder start token -- multiple lags
         decoder_tensor = target[:,self.hist_len-1:self.hist_len-1+self.f_len,:]
-        
-        if self.decoder_lags >= 2: 
+        if self.decoder_lags >= 2:
             for i in range(2, self.decoder_lags+1):
                 decoder_tensor = tf.concat([decoder_tensor, target[:,self.hist_len-i:self.hist_len-i+self.f_len,:]], axis=-1)
-            
+        
         # static numeric
         if len(self.stat_num_indices)>0:
             for col, i in zip(self.stat_num_col_names, self.stat_num_indices):
@@ -1120,7 +1020,7 @@ class ConvTransformer_Model(tf.keras.Model):
         return o, s
     
     
-def ConvTransformer_Train(model, 
+def Transformer_Train(model, 
                       train_dataset, 
                       test_dataset, 
                       loss_type,
@@ -1148,9 +1048,11 @@ def ConvTransformer_Train(model,
      weighted_training: True/False
      model_prefix: relative or absolute model path with a prefix for a model name
      logdir: tensorflow training logs for tensorboard
-        
+     opt: non-default tf optimizer
+     clipnorm: global clipnorm value
     """
-    
+
+    @tf.function
     def trainstep(model, optimizer, x_train, y_train, scale, wts, training):
         with tf.GradientTape() as tape:
             o, s = model(x_train, training=training)
@@ -1175,7 +1077,8 @@ def ConvTransformer_Train(model,
         grads = tape.gradient(loss, model.trainable_variables)
         optimizer.apply_gradients((grad, var) for (grad, var) in zip(grads, model.trainable_variables) if grad is not None)
         return loss, o
-    
+
+    @tf.function
     def teststep(model, x_test, y_test, scale, wts, training):
         o, s = model(x_test, training=training)
         out_len = tf.shape(s)[1]
@@ -1204,12 +1107,12 @@ def ConvTransformer_Train(model,
     else:
         optimizer = opt
         optimizer.learning_rate = learning_rate
-    
+
     if clipnorm is None:
         pass
     else:
         optimizer.global_clipnorm = clipnorm
-        
+
     # model loss & metric
     train_loss_avg = tf.keras.metrics.Mean('train_loss', dtype=tf.float32)
     test_loss_avg = tf.keras.metrics.Mean('test_loss', dtype=tf.float32)
@@ -1246,7 +1149,7 @@ def ConvTransformer_Train(model,
         pickle.dump(model.vocab_dict, f)
     
     model_tracker_file = open(model_prefix + '_tracker.txt', mode='w', encoding='utf-8')
-    model_tracker_file.write('Simple ConvTransformer Training started with following Model Parameters ... \n')
+    model_tracker_file.write('Simple Transformer Training started with following Model Parameters ... \n')
     model_tracker_file.write('----------------------------------------\n')
     model_tracker_file.write('num_layers ' + str(model.num_layers) + '\n')
     model_tracker_file.write('num_heads ' + str(model.num_heads) + '\n')
@@ -1281,7 +1184,7 @@ def ConvTransformer_Train(model,
                 with train_summary_writer.as_default():
                     tf.summary.scalar('loss', train_loss_avg.result(), step=epoch)
                     tf.summary.scalar('accuracy', train_metric.result(), step=epoch)
-            
+          
         for step, (x_batch, y_batch, scale, wts) in enumerate(test_dataset):
             if step > train_steps_per_epoch:
                 break
@@ -1296,7 +1199,7 @@ def ConvTransformer_Train(model,
                 with test_summary_writer.as_default():
                     tf.summary.scalar('loss', test_loss_avg.result(), step=epoch)
                     tf.summary.scalar('accuracy', test_metric.result(), step=epoch)
-        
+              
         print("Epoch: {}, train_loss: {}, test_loss: {}, train_metric: {}, test_metric: {}".format(epoch, 
                                                                                                     train_loss_avg.result().numpy(),
                                                                                                     test_loss_avg.result().numpy(),
@@ -1349,68 +1252,14 @@ def ConvTransformer_Train(model,
     return best_model
     
     
-def ConvTransformer_Infer(model, inputs, loss_type, hist_len, f_len, target_index, num_quantiles):
+def Transformer_Infer(model, inputs, loss_type, hist_len, f_len, target_index):
     infer_tensor, scale, id_arr, date_arr = inputs
     scale = scale[:,-1:,-1]
     window_len = int(hist_len + f_len)
     output = []
         
-    out, dist = model(infer_tensor, training=False)
-            
-    # update target
-    if loss_type in ['Normal','Poisson','Negbin']:
-        dist = dist.numpy()
-        output_arr = dist[:,:,0]
-        
-    elif loss_type in ['Point']:
-        out = out.numpy()
-        output_arr = out[:,:,0]
-        
-    elif loss_type in ['Quantile']:
-        out = out.numpy()
-        output_arr = out[:,:,:]
-       
-    # rescale if necessary
-    if loss_type in ['Normal','Poisson','Negbin']:
-        output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr), axis=1))
-        output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0:'id','value':'forecast'})
-        output_df = output_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
-        
-    elif loss_type in ['Point']:
-        output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr*scale.reshape(-1,1)), axis=1))
-        output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0:'id','value':'forecast'})
-        output_df = output_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
-        
-    elif loss_type in ['Quantile']:
-        df_list = []
-        for i in range(num_quantiles):
-            output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr[:,:,i]*scale.reshape(-1,1)), axis=1))
-            output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0:'id','value': f"forecast_{i}"})
-            output_df = output_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
-            df_list.append(output_df)
-        output_df = pd.concat(df_list, axis=1)
-        output_df = output_df.loc[:,~output_df.columns.duplicated()]
-        
-    # merge date_columns
-    date_df = pd.DataFrame(date_arr.reshape(-1,)).rename(columns={0:'period'})
-    forecast_df = pd.concat([date_df, output_df], axis=1)
-    
-    if loss_type in ['Quantile']:
-        for i in range(num_quantiles):
-            forecast_df[f"forecast_{i}"] = forecast_df[f"forecast_{i}"].astype(np.float32)
-    else:
-        forecast_df['forecast'] = forecast_df['forecast'].astype(np.float32)
-        
-    return forecast_df
-
-
-def ConvTransformer_InferRecursive(model, inputs, loss_type, hist_len, f_len, target_index, num_quantiles):
-    infer_tensor, scale, id_arr, date_arr = inputs
-    scale = scale[:,-1:,-1]
-    window_len = hist_len + f_len
-    output = []
-    
     for i in range(f_len):
+        print("Forecasting Period: ", i+1)
         out, dist = model(infer_tensor, training=False)
             
         # update target
@@ -1427,7 +1276,7 @@ def ConvTransformer_InferRecursive(model, inputs, loss_type, hist_len, f_len, ta
             
         # feedback updated hist + fh tensor
         infer_tensor = tf.convert_to_tensor(np.char.decode(infer_arr.astype(np.bytes_), 'UTF-8'), dtype=tf.string)
-                    
+            
     output_arr = np.concatenate(output, axis=1) 
         
     # rescale if necessary
@@ -1445,19 +1294,71 @@ def ConvTransformer_InferRecursive(model, inputs, loss_type, hist_len, f_len, ta
         
     return forecast_df
 
+def Transformer_Infer_Piecewise(model, inputs, loss_type, hist_len, f_len, target_index, chunksize):
+    infer_tensor, scale, id_arr, date_arr = inputs
+    scale = scale[:,-1:,-1]
+    window_len = int(hist_len + f_len)
+    total_size = tf.shape(infer_tensor)[0]
+    num_chunks = int((total_size//chunksize) + (1 if (total_size%chunksize)!=0 else 0))
+    forecast_df_list = []
+    
+    for chunk_no in range(num_chunks):
+        print("Forecasting Chunk: ", chunk_no+1)
+        infer_tensor_chunk = infer_tensor[chunk_no*chunksize:(chunk_no+1)*chunksize]
+        id_arr_chunk = id_arr[chunk_no*chunksize:(chunk_no+1)*chunksize]
+        date_arr_chunk = date_arr[chunk_no*chunksize:(chunk_no+1)*chunksize]
+        scale_chunk = scale[chunk_no*chunksize:(chunk_no+1)*chunksize]
+        output = []
+        for i in range(f_len):
+            out, dist = model(infer_tensor_chunk, training=False)
+            
+            # update target
+            if loss_type in ['Normal','Poisson','Negbin']:
+                dist = dist.numpy()
+                output.append(dist[:,i:i+1,0])
+                infer_arr = infer_tensor_chunk.numpy()
+                infer_arr[:,hist_len:hist_len+i+1,target_index] = out[:,0:i+1,0]/scale_chunk
+            elif loss_type in ['Point','Quantile']:
+                out = out.numpy()
+                output.append(out[:,i:i+1,0])
+                infer_arr = infer_tensor_chunk.numpy()
+                infer_arr[:,hist_len:hist_len+i+1,target_index] = out[:,0:i+1,0]
+            
+            # feedback updated hist + fh tensor
+            infer_tensor_chunk = tf.convert_to_tensor(np.char.decode(infer_arr.astype(np.bytes_), 'UTF-8'), dtype=tf.string)
+            
+        output_arr = np.concatenate(output, axis=1) 
+        
+        # rescale if necessary
+        if loss_type in ['Normal','Poisson','Negbin']:
+            output_df = pd.DataFrame(np.concatenate((id_arr_chunk.reshape(-1,1),output_arr), axis=1))
+        elif loss_type in ['Point','Quantile']:
+            output_df = pd.DataFrame(np.concatenate((id_arr_chunk.reshape(-1,1),output_arr*scale_chunk.reshape(-1,1)), axis=1))
+        output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0:'id','value':'forecast'})
+        output_df = output_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
+        
+        # merge date_columns
+        date_df = pd.DataFrame(date_arr_chunk.reshape(-1,)).rename(columns={0:'period'})
+        forecast_df = pd.concat([date_df, output_df], axis=1)
+        forecast_df['forecast'] = forecast_df['forecast'].astype(np.float32)
+        forecast_df_list.append(forecast_df)
+    
+    forecast_df = pd.concat(forecast_df_list, axis=0)    
+        
+    return forecast_df
 
-class Simple_ConvTransformer:
+
+class Simple_Transformer:
     def __init__(self, 
                  col_index_dict,
                  vocab_dict,
                  num_layers,
                  num_heads,
-                 kernel_sizes,
                  d_model,
                  forecast_horizon,
                  max_inp_len,
                  loss_type,
-                 num_quantiles,
+                 num_quantiles=1,
                  decoder_lags='Default',
                  dropout_rate=0.1):
         
@@ -1465,30 +1366,28 @@ class Simple_ConvTransformer:
         self.vocab_dict = vocab_dict
         self.num_layers = num_layers
         self.num_heads = num_heads
-        self.kernel_sizes = kernel_sizes
         self.d_model = d_model
         self.forecast_horizon = forecast_horizon
         self.max_inp_len = max_inp_len
         self.loss_type = loss_type
         self.num_quantiles = num_quantiles
-        self.decoder_lags = decoder_lags
+        self.decoder_lags = decoder_lags,
         self.dropout_rate = dropout_rate
         self.target_col_name, self.target_index = self.col_index_dict.get('target_index')
     
     def build(self):
         tf.keras.backend.clear_session()
-        self.model = ConvTransformer_Model(self.col_index_dict,
-                                       self.vocab_dict,
-                                       self.num_layers,
-                                       self.num_heads,
-                                       self.kernel_sizes,
-                                       self.d_model,
-                                       self.forecast_horizon,
-                                       self.max_inp_len,
-                                       self.loss_type,
-                                       self.num_quantiles,
-                                       self.decoder_lags,
-                                       self.dropout_rate)
+        self.model = Transformer_Model(self.col_index_dict,
+                                  self.vocab_dict,
+                                  self.num_layers,
+                                  self.num_heads,
+                                  self.d_model,
+                                  self.forecast_horizon,
+                                  self.max_inp_len,
+                                  self.loss_type,
+                                  self.num_quantiles,
+                                  self.decoder_lags,
+                                  self.dropout_rate)
         
     def train(self, 
               train_dataset, 
@@ -1511,7 +1410,7 @@ class Simple_ConvTransformer:
         for x,y,s,w in train_dataset.take(1):
             self.model(x, training=False)
         
-        best_model = ConvTransformer_Train(self.model, 
+        best_model = Transformer_Train(self.model, 
                                        train_dataset, 
                                        test_dataset, 
                                        self.loss_type,
@@ -1534,48 +1433,61 @@ class Simple_ConvTransformer:
         tf.keras.backend.clear_session()
         self.model = tf.keras.models.load_model(model_path)
         
-    def infer(self, inputs, recursive_decode=True):
-        if not recursive_decode:
-            forecast = ConvTransformer_Infer(self.model, inputs, self.loss_type, self.max_inp_len, self.forecast_horizon, self.target_index, self.num_quantiles)
-        else:
-            forecast = ConvTransformer_InferRecursive(self.model, inputs, self.loss_type, self.max_inp_len, self.forecast_horizon, self.target_index, self.num_quantiles)
+    def infer(self, inputs):
+        forecast = Transformer_Infer(self.model, inputs, self.loss_type, self.max_inp_len, self.forecast_horizon, self.target_index)
         
-        return forecast     
-                
+        return forecast
+    
+    def infer_piecewise(self, inputs, chunksize):
+        forecast = Transformer_Infer_Piecewise(self.model, inputs, self.loss_type, self.max_inp_len, self.forecast_horizon, self.target_index, chunksize)
+        
+        return forecast
+    
+    def evaluate(self, forecasts, actuals, aggregate_on=[]):
+        
+        results_df = actuals.merge(forecasts, on=['id','period'], how='inner')
+        
+        assert results_df.shape[0] == forecasts.shape[0], "forecasts & actuals dataframes dissimilar!"
+        
+        results_df['abs_error'] = np.abs(results_df['forecast'] - results_df['actual'])
+        results_df = results_df.groupby(['period']+aggregate_on).agg({'forecast':'sum', 'actual':'sum', 'abs_error':'sum'}).reset_index(drop=True)
+        
+        # FA & FB
+        results_df['Forecast_Accuracy'] = (1 - results_df['abs_error']/np.maximum(results_df['actual'], 1.0))*100
+        results_df['Forecast_Bias'] = (results_df['forecast']/np.maximum(results_df['actual'],1.0) - 1)*100
+        
+        return results_df
 
 # VarTransformer Wrapper
 
-class ConvVarTransformer_Model(tf.keras.Model):
+class VarTransformer_Model(tf.keras.Model):
     def __init__(self,
                  col_index_dict,
                  vocab_dict,
                  num_layers,
                  num_heads,
-                 kernel_sizes,
                  d_model,
                  forecast_horizon,
                  max_inp_len,
                  loss_type,
-                 num_quantiles,
+                 num_quantiles=1,
                  decoder_lags='Default',
                  dropout_rate=0.1):
 
-        super(ConvVarTransformer_Model, self).__init__()
+        super(VarTransformer_Model, self).__init__()
         
         self.hist_len = int(max_inp_len)
         self.f_len = int(forecast_horizon)
         self.loss_type = loss_type
         self.col_index_dict = col_index_dict
         self.vocab_dict = vocab_dict
-        
         if decoder_lags == 'Default':
-            self.decoder_lags = max(int(self.hist_len/4), 2)
+            self.decoder_lags = max(int(self.hist_len / 4), 2)
         else:
             self.decoder_lags = max(int(decoder_lags), 1)
         
         self.num_layers = num_layers
         self.num_heads = num_heads
-        self.kernel_sizes = kernel_sizes
         self.d_model = d_model
         self.forecast_horizon = forecast_horizon
         self.max_inp_len = max_inp_len
@@ -1586,11 +1498,10 @@ class ConvVarTransformer_Model(tf.keras.Model):
         else:
             self.static_variables = True
         
-        self.model = ConvVarTransformer(static_variables = self.static_variables,
+        self.model = VarTransformer(static_variables = self.static_variables,
                                     num_layers = num_layers,
                                     d_model = d_model,
                                     num_heads = num_heads, 
-                                    kernel_sizes = kernel_sizes,
                                     dff = int(2*d_model),
                                     hist_len = self.hist_len, 
                                     f_len = self.f_len,
@@ -1663,9 +1574,13 @@ class ConvVarTransformer_Model(tf.keras.Model):
         
         self.target_linear_transform_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=d_model, use_bias=False)) 
         self.scale_linear_transform_layer = tf.keras.layers.Dense(units=d_model, use_bias=False)
-
-        self.decoderlag_linear_transform_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=d_model, use_bias=False))
- 
+        
+        self.decoderlag_linear_transform_layers = {}
+        if self.decoder_lags >= 2:
+            for i in range(2, self.decoder_lags+1):
+                colname = "{}_lag_{}".format(self.target_col_name,i)
+                self.decoderlag_linear_transform_layers[colname] = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=d_model, use_bias=False))
+            
         if len(self.stat_num_col_names)>0:
             self.stat_linear_transform_layers = {}
             for colname in self.stat_num_col_names:
@@ -1685,10 +1600,6 @@ class ConvVarTransformer_Model(tf.keras.Model):
         
         # target
         target = tf.strings.to_number(inputs[:,:,self.target_index:self.target_index+1], out_type=tf.dtypes.float32)
-
-        # for decoder
-        target_copy = tf.identity(target)
-
         target = self.target_linear_transform_layer(target)
         
         # ordered col names list
@@ -1699,16 +1610,16 @@ class ConvVarTransformer_Model(tf.keras.Model):
         # stat, encoder, decoder tensor lists
         static_vars_list = []
         encoder_vars_list = [target[:,:self.hist_len,:]]
-        decoder_vars_list = []
+        decoder_vars_list = [target[:,self.hist_len-1:self.hist_len-1+self.f_len,:]]
         
         past_cols_ordered_list = past_cols_ordered_list + [self.target_col_name]
         future_cols_ordered_list = future_cols_ordered_list + [self.target_col_name]
         
         # decoder start token
-        if self.decoder_lags >= 1:
-            for i in range(1, self.decoder_lags+1):
-                dec_lag_var = target_copy[:,self.hist_len-i:self.hist_len-i+self.f_len,:]
-                dec_lag_var = self.decoderlag_linear_transform_layer(dec_lag_var)
+        if self.decoder_lags >= 2:
+            for i in range(2, self.decoder_lags+1):
+                dec_lag_var = target[:,self.hist_len-i:self.hist_len-i+self.f_len,:]
+                dec_lag_var = self.decoderlag_linear_transform_layers["{}_lag_{}".format(self.target_col_name,i)](dec_lag_var)
                 decoder_vars_list.append(dec_lag_var)
                 future_cols_ordered_list = future_cols_ordered_list + ["{}_lag_{}".format(self.target_col_name,i)]
         
@@ -1809,7 +1720,7 @@ class ConvVarTransformer_Model(tf.keras.Model):
         return o, s, ([stat_cols_ordered_list,past_cols_ordered_list,future_cols_ordered_list], [s_wts, p_wts, f_wts])
     
     
-def ConvVarTransformer_Train(model, 
+def VarTransformer_Train(model, 
                       train_dataset, 
                       test_dataset, 
                       loss_type,
@@ -1837,8 +1748,10 @@ def ConvVarTransformer_Train(model,
      weighted_training: True/False
      model_prefix: relative or absolute model path with a prefix for a model name
      logdir: tensorflow training logs for tensorboard
-        
+     opt: non-default tf optimizer
+     clipnorm: global clipping norm
     """
+
     @tf.function
     def trainstep(model, optimizer, x_train, y_train, scale, wts, training):
         with tf.GradientTape() as tape:
@@ -1864,7 +1777,7 @@ def ConvVarTransformer_Train(model,
         grads = tape.gradient(loss, model.trainable_variables)
         optimizer.apply_gradients((grad, var) for (grad, var) in zip(grads, model.trainable_variables) if grad is not None)
         return loss, o
-    
+
     @tf.function
     def teststep(model, x_test, y_test, scale, wts, training):
         o, s, f = model(x_test, training=training)
@@ -1893,15 +1806,13 @@ def ConvVarTransformer_Train(model,
         optimizer = tf.keras.optimizers.Nadam(learning_rate=learning_rate)
     else:
         optimizer = opt
-        optimizer.learning_rate=learning_rate
-    
+        optimizer.learning_rate = learning_rate
+
     if clipnorm is None:
         pass
     else:
         optimizer.global_clipnorm = clipnorm
-       
-    print("lr: ",optimizer.learning_rate.numpy())
-    
+
     # model loss & metric
     train_loss_avg = tf.keras.metrics.Mean('train_loss', dtype=tf.float32)
     test_loss_avg = tf.keras.metrics.Mean('test_loss', dtype=tf.float32)
@@ -1939,7 +1850,7 @@ def ConvVarTransformer_Train(model,
     
     model_tracker_file = open(model_prefix + '_tracker.txt', mode='w', encoding='utf-8')
 
-    model_tracker_file.write('Feature Weighted ConvTransformer Training started with following Model Parameters ... \n')
+    model_tracker_file.write('Feature Weighted Transformer Training started with following Model Parameters ... \n')
     model_tracker_file.write('----------------------------------------\n')
     model_tracker_file.write('num_layers ' + str(model.num_layers) + '\n')
     model_tracker_file.write('num_heads ' + str(model.num_heads) + '\n')
@@ -2043,95 +1954,7 @@ def ConvVarTransformer_Train(model,
         
     return best_model
         
-def ConvVarTransformer_Infer(model, inputs, loss_type, hist_len, f_len, target_index, num_quantiles):
-    infer_tensor, scale, id_arr, date_arr = inputs
-    scale = scale[:,-1:,-1]
-    window_len = hist_len + f_len
-    output = []
-    stat_wts_df = None 
-    encoder_wts_df = None 
-    decoder_wts_df = None
-        
-    out, dist, feature_wts = model(infer_tensor, training=False)
-            
-    # update target
-    if loss_type in ['Normal','Poisson','Negbin']:
-        dist = dist.numpy()
-        output_arr = dist[:,:,0]
-            
-    elif loss_type in ['Point']:
-        out = out.numpy()
-        output_arr = out[:,:,0]
-    
-    elif loss_type in ['Quantile']:
-        out = out.numpy()
-        output_arr = out[:,:,:]
-    
-    column_names_list, wts_list = feature_wts
-    stat_columns, encoder_columns, decoder_columns = column_names_list
-    stat_columns_string = []
-    encoder_columns_string = []
-    decoder_columns_string = []
-    for col in stat_columns:
-        stat_columns_string.append(col.numpy().decode("utf-8"))
-    for col in encoder_columns:
-        encoder_columns_string.append(col.numpy().decode("utf-8"))
-    for col in decoder_columns:
-        decoder_columns_string.append(col.numpy().decode("utf-8"))
-                
-    stat_wts, encoder_wts, decoder_wts = wts_list
-
-    # Average feature weights across time dim
-    encoder_wts = encoder_wts.numpy()
-    decoder_wts = decoder_wts.numpy()
-    
-    # convert wts to df    
-    encoder_wts_df = pd.DataFrame(encoder_wts, columns=encoder_columns_string)   
-    decoder_wts_df = pd.DataFrame(decoder_wts, columns=decoder_columns_string)    
-    if stat_wts is not None:
-        stat_wts = stat_wts.numpy()
-        stat_wts_df = pd.DataFrame(stat_wts, columns=stat_columns_string)   
-            
-    # rescale if necessary
-    if loss_type in ['Normal','Poisson','Negbin']:
-        output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr), axis=1))
-        output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0:'id','value':'forecast'})
-        output_df = output_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
-        
-    elif loss_type in ['Point']:
-        output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr*scale.reshape(-1,1)), axis=1))
-        output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0:'id','value':'forecast'})
-        output_df = output_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
-        
-    elif loss_type in ['Quantile']:
-        df_list = []
-        for i in range(num_quantiles):
-            output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr[:,:,i]*scale.reshape(-1,1)), axis=1))
-            output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0:'id','value': f"forecast_{i}"})
-            output_df = output_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
-            df_list.append(output_df)
-        output_df = pd.concat(df_list, axis=1)
-        output_df = output_df.loc[:,~output_df.columns.duplicated()]
-        
-    # merge date_columns
-    date_df = pd.DataFrame(date_arr.reshape(-1,)).rename(columns={0:'period'})
-    forecast_df = pd.concat([date_df, output_df], axis=1)
-    if loss_type in ['Quantile']:
-        for i in range(num_quantiles):
-            forecast_df[f"forecast_{i}"] = forecast_df[f"forecast_{i}"].astype(np.float32)
-    else:
-        forecast_df['forecast'] = forecast_df['forecast'].astype(np.float32)
-        
-    # weights df merge with id
-    stat_wts_df = pd.concat([pd.DataFrame(id_arr.reshape(-1,1)), stat_wts_df], axis=1)
-    encoder_wts_df = pd.concat([pd.DataFrame(id_arr.reshape(-1,1)), encoder_wts_df], axis=1)
-    decoder_wts_df = pd.concat([pd.DataFrame(id_arr.reshape(-1,1)), decoder_wts_df], axis=1)
-    print(stat_wts_df.shape, encoder_wts_df.shape, decoder_wts_df.shape)
-        
-    return forecast_df, stat_wts_df, encoder_wts_df, decoder_wts_df
-
-
-def ConvVarTransformer_InferRecursive(model, inputs, loss_type, hist_len, f_len, target_index, num_quantiles):
+def VarTransformer_InferRecursive(model, inputs, loss_type, hist_len, f_len, target_index, num_quantiles):
     infer_tensor, scale, id_arr, date_arr = inputs
     scale = scale[:,-1:,-1]
     window_len = hist_len + f_len
@@ -2141,6 +1964,7 @@ def ConvVarTransformer_InferRecursive(model, inputs, loss_type, hist_len, f_len,
     decoder_wts_df = None
         
     for i in range(f_len):
+        print("Forecasting Period: ", i+1)
         out, dist, feature_wts = model(infer_tensor, training=False)
             
         # update target
@@ -2165,7 +1989,7 @@ def ConvVarTransformer_InferRecursive(model, inputs, loss_type, hist_len, f_len,
             encoder_columns_string = []
             decoder_columns_string = []
             for col in stat_columns:
-                stat_columns_string.append(col.numpy().decode("utf-8")) 
+                stat_columns_string.append(col.numpy().decode("utf-8"))
             for col in encoder_columns:
                 encoder_columns_string.append(col.numpy().decode("utf-8"))
             for col in decoder_columns:
@@ -2206,18 +2030,209 @@ def ConvVarTransformer_InferRecursive(model, inputs, loss_type, hist_len, f_len,
     return forecast_df, stat_wts_df, encoder_wts_df, decoder_wts_df
 
 
-class Feature_Weighted_ConvTransformer:
+def VarTransformer_Infer(model, inputs, loss_type, hist_len, f_len, target_index, num_quantiles):
+    infer_tensor, scale, id_arr, date_arr = inputs
+    scale = scale[:, -1:, -1]
+    window_len = hist_len + f_len
+    output = []
+    stat_wts_df = None
+    encoder_wts_df = None
+    decoder_wts_df = None
+
+    out, dist, feature_wts = model(infer_tensor, training=False)
+
+    # update target
+    if loss_type in ['Normal', 'Poisson', 'Negbin']:
+        dist = dist.numpy()
+        output_arr = dist[:, :, 0]
+
+    elif loss_type in ['Point']:
+        out = out.numpy()
+        output_arr = out[:, :, 0]
+
+    elif loss_type in ['Quantile']:
+        out = out.numpy()
+        output_arr = out[:, :, :]
+
+    column_names_list, wts_list = feature_wts
+    stat_columns, encoder_columns, decoder_columns = column_names_list
+    stat_columns_string = []
+    encoder_columns_string = []
+    decoder_columns_string = []
+    for col in stat_columns:
+        stat_columns_string.append(col.numpy().decode("utf-8"))
+    for col in encoder_columns:
+        encoder_columns_string.append(col.numpy().decode("utf-8"))
+    for col in decoder_columns:
+        decoder_columns_string.append(col.numpy().decode("utf-8"))
+
+    stat_wts, encoder_wts, decoder_wts = wts_list
+
+    # Average feature weights across time dim
+    encoder_wts = encoder_wts.numpy()
+    decoder_wts = decoder_wts.numpy()
+
+    # convert wts to df
+    encoder_wts_df = pd.DataFrame(encoder_wts, columns=encoder_columns_string)
+    decoder_wts_df = pd.DataFrame(decoder_wts, columns=decoder_columns_string)
+    if stat_wts is not None:
+        stat_wts = stat_wts.numpy()
+        stat_wts_df = pd.DataFrame(stat_wts, columns=stat_columns_string)
+
+        # rescale if necessary
+    if loss_type in ['Normal', 'Poisson', 'Negbin']:
+        output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1, 1), output_arr), axis=1))
+        output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(
+            columns={0: 'id', 'value': 'forecast'})
+        output_df = output_df.rename_axis('index').sort_values(by=['id', 'index']).reset_index(drop=True)
+
+    elif loss_type in ['Point']:
+        output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1, 1), output_arr * scale.reshape(-1, 1)), axis=1))
+        output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(
+            columns={0: 'id', 'value': 'forecast'})
+        output_df = output_df.rename_axis('index').sort_values(by=['id', 'index']).reset_index(drop=True)
+
+    elif loss_type in ['Quantile']:
+        df_list = []
+        for i in range(num_quantiles):
+            output_df = pd.DataFrame(
+                np.concatenate((id_arr.reshape(-1, 1), output_arr[:, :, i] * scale.reshape(-1, 1)), axis=1))
+            output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(
+                columns={0: 'id', 'value': f"forecast_{i}"})
+            output_df = output_df.rename_axis('index').sort_values(by=['id', 'index']).reset_index(drop=True)
+            df_list.append(output_df)
+        output_df = pd.concat(df_list, axis=1)
+        output_df = output_df.loc[:, ~output_df.columns.duplicated()]
+
+    # merge date_columns
+    date_df = pd.DataFrame(date_arr.reshape(-1, )).rename(columns={0: 'period'})
+    forecast_df = pd.concat([date_df, output_df], axis=1)
+    if loss_type in ['Quantile']:
+        for i in range(num_quantiles):
+            forecast_df[f"forecast_{i}"] = forecast_df[f"forecast_{i}"].astype(np.float32)
+    else:
+        forecast_df['forecast'] = forecast_df['forecast'].astype(np.float32)
+
+    # weights df merge with id
+    stat_wts_df = pd.concat([pd.DataFrame(id_arr.reshape(-1, 1)), stat_wts_df], axis=1)
+    encoder_wts_df = pd.concat([pd.DataFrame(id_arr.reshape(-1, 1)), encoder_wts_df], axis=1)
+    decoder_wts_df = pd.concat([pd.DataFrame(id_arr.reshape(-1, 1)), decoder_wts_df], axis=1)
+    print(stat_wts_df.shape, encoder_wts_df.shape, decoder_wts_df.shape)
+
+    return forecast_df, stat_wts_df, encoder_wts_df, decoder_wts_df
+
+
+def VarTransformer_Infer_Piecewise(model, inputs, loss_type, hist_len, f_len, target_index, chunksize):
+    infer_tensor, scale, id_arr, date_arr = inputs
+    scale = scale[:,-1:,-1]
+    window_len = hist_len + f_len
+    output = []
+    
+    total_size = tf.shape(infer_tensor)[0]
+    num_chunks = int((total_size//chunksize) + (1 if (total_size%chunksize)!=0 else 0))
+    forecast_df_list = []
+    stat_wts_df_list = [] 
+    encoder_wts_df_list = [] 
+    decoder_wts_df_list = []
+    
+    for chunk_no in range(num_chunks):
+        print("Forecasting Chunk: ", chunk_no+1)
+        infer_tensor_chunk = infer_tensor[chunk_no*chunksize:(chunk_no+1)*chunksize]
+        id_arr_chunk = id_arr[chunk_no*chunksize:(chunk_no+1)*chunksize]
+        date_arr_chunk = date_arr[chunk_no*chunksize:(chunk_no+1)*chunksize]
+        scale_chunk = scale[chunk_no*chunksize:(chunk_no+1)*chunksize]
+        encoder_wts_df = None
+        decoder_wts_df = None
+        stat_wts_df = None
+        output = []
+        for i in range(f_len):
+            out, dist, feature_wts = model(infer_tensor_chunk, training=False)
+            
+            # update target
+            if loss_type in ['Normal','Poisson','Negbin']:
+                dist = dist.numpy()
+                output.append(dist[:,i:i+1,0])
+                infer_arr = infer_tensor_chunk.numpy()
+                infer_arr[:,hist_len:hist_len+i+1,target_index] = out[:,0:i+1,0]/scale_chunk
+            elif loss_type in ['Point','Quantile']:
+                out = out.numpy()
+                output.append(out[:,i:i+1,0])
+                infer_arr = infer_tensor_chunk.numpy()
+                infer_arr[:,hist_len:hist_len+i+1,target_index] = out[:,0:i+1,0]
+            
+            # feedback updated hist + fh tensor
+            infer_tensor_chunk = tf.convert_to_tensor(np.char.decode(infer_arr.astype(np.bytes_), 'UTF-8'), dtype=tf.string)
+            
+            if i == (f_len - 1):
+                column_names_list, wts_list = feature_wts
+                stat_columns, encoder_columns, decoder_columns = column_names_list
+                stat_columns_string = []
+                encoder_columns_string = []
+                decoder_columns_string = []
+                for col in stat_columns:
+                    stat_columns_string.append(col.numpy().decode("utf-8"))
+                for col in encoder_columns:
+                    encoder_columns_string.append(col.numpy().decode("utf-8"))
+                for col in decoder_columns:
+                    decoder_columns_string.append(col.numpy().decode("utf-8"))
+                
+                stat_wts, encoder_wts, decoder_wts = wts_list
+                # Average feature weights across time dim
+                encoder_wts = encoder_wts.numpy()
+                decoder_wts = decoder_wts.numpy()
+                # convert wts to df    
+                encoder_wts_df = pd.DataFrame(encoder_wts, columns=encoder_columns_string)   
+                decoder_wts_df = pd.DataFrame(decoder_wts, columns=decoder_columns_string)    
+                if stat_wts is not None:
+                    stat_wts = stat_wts.numpy()
+                    stat_wts_df = pd.DataFrame(stat_wts, columns=stat_columns_string)   
+            
+        output_arr = np.concatenate(output, axis=1) 
+        
+        # rescale if necessary
+        if loss_type in ['Normal','Poisson','Negbin']:
+            output_df = pd.DataFrame(np.concatenate((id_arr_chunk.reshape(-1,1),output_arr), axis=1))
+        elif loss_type in ['Point','Quantile']:
+            output_df = pd.DataFrame(np.concatenate((id_arr_chunk.reshape(-1,1),output_arr*scale_chunk.reshape(-1,1)), axis=1))
+        output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0:'id','value':'forecast'})
+        output_df = output_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
+        
+        # merge date_columns
+        date_df = pd.DataFrame(date_arr_chunk.reshape(-1,)).rename(columns={0:'period'})
+        forecast_df = pd.concat([date_df, output_df], axis=1)
+        forecast_df['forecast'] = forecast_df['forecast'].astype(np.float32)
+        
+        # weights df merge with id
+        stat_wts_df = pd.concat([pd.DataFrame(id_arr_chunk.reshape(-1,1)), stat_wts_df], axis=1)
+        encoder_wts_df = pd.concat([pd.DataFrame(id_arr_chunk.reshape(-1,1)), encoder_wts_df], axis=1)
+        decoder_wts_df = pd.concat([pd.DataFrame(id_arr_chunk.reshape(-1,1)), decoder_wts_df], axis=1)
+        
+        forecast_df_list.append(forecast_df)
+        stat_wts_df_list.append(stat_wts_df)
+        encoder_wts_df_list.append(encoder_wts_df)
+        decoder_wts_df_list.append(encoder_wts_df)
+        
+    forecast_df = pd.concat(forecast_df_list, axis=0)
+    stat_wts_df = pd.concat(stat_wts_df_list, axis=0)
+    encoder_wts_df = pd.concat(encoder_wts_df_list, axis=0)
+    decoder_wts_df = pd.concat(decoder_wts_df_list, axis=0)
+    
+    print(stat_wts_df.shape, encoder_wts_df.shape, decoder_wts_df.shape)    
+    return forecast_df, stat_wts_df, encoder_wts_df, decoder_wts_df
+
+
+
+class Feature_Weighted_Transformer:
     def __init__(self, 
                  col_index_dict,
                  vocab_dict,
                  num_layers,
                  num_heads,
-                 kernel_sizes,
                  d_model,
                  forecast_horizon,
                  max_inp_len,
                  loss_type,
-                 num_quantiles,
+                 num_quantiles=1,
                  decoder_lags='Default',
                  dropout_rate=0.1):
         
@@ -2225,7 +2240,6 @@ class Feature_Weighted_ConvTransformer:
         self.vocab_dict = vocab_dict
         self.num_layers = num_layers
         self.num_heads = num_heads
-        self.kernel_sizes = kernel_sizes
         self.d_model = d_model
         self.forecast_horizon = forecast_horizon
         self.max_inp_len = max_inp_len
@@ -2237,11 +2251,10 @@ class Feature_Weighted_ConvTransformer:
     
     def build(self):
         tf.keras.backend.clear_session()
-        self.model = ConvVarTransformer_Model(self.col_index_dict,
+        self.model = VarTransformer_Model(self.col_index_dict,
                                   self.vocab_dict,
                                   self.num_layers,
                                   self.num_heads,
-                                  self.kernel_sizes,
                                   self.d_model,
                                   self.forecast_horizon,
                                   self.max_inp_len,
@@ -2271,7 +2284,7 @@ class Feature_Weighted_ConvTransformer:
         for x,y,s,w in train_dataset.take(1):
             self.model(x, training=False)
         
-        best_model = ConvVarTransformer_Train(self.model, 
+        best_model = VarTransformer_Train(self.model, 
                                           train_dataset, 
                                           test_dataset, 
                                           self.loss_type,
@@ -2295,13 +2308,39 @@ class Feature_Weighted_ConvTransformer:
         self.model = tf.keras.models.load_model(model_path)
         
     def infer(self, inputs, recursive_decode=True):
-        if not recursive_decode:
-            forecast, stat_wts_df, encoder_wts_df, decoder_wts_df = ConvVarTransformer_Infer(self.model, inputs, self.loss_type, self.max_inp_len, self.forecast_horizon, self.target_index, self.num_quantiles)
+        if recursive_decode:
+            forecast, stat_wts_df, encoder_wts_df, decoder_wts_df = VarTransformer_InferRecursive(self.model, inputs,
+                                                                                                  self.loss_type,
+                                                                                                  self.max_inp_len,
+                                                                                                  self.forecast_horizon,
+                                                                                                  self.target_index,
+                                                                                                  self.num_quantiles)
         else:
-            forecast, stat_wts_df, encoder_wts_df, decoder_wts_df = ConvVarTransformer_InferRecursive(self.model, inputs, self.loss_type, self.max_inp_len, self.forecast_horizon, self.target_index, self.num_quantiles)
-        
+            forecast, stat_wts_df, encoder_wts_df, decoder_wts_df = VarTransformer_Infer(self.model, inputs,
+                                                                                         self.loss_type,
+                                                                                         self.max_inp_len,
+                                                                                         self.forecast_horizon,
+                                                                                         self.target_index,
+                                                                                         self.num_quantiles)
+
         return forecast, [stat_wts_df, encoder_wts_df, decoder_wts_df]
     
-
-
-
+    def infer_piecewise(self, inputs, chunksize):
+        forecast, stat_wts_df, encoder_wts_df, decoder_wts_df = VarTransformer_Infer_Piecewise(self.model, inputs, self.loss_type, self.max_inp_len, self.forecast_horizon, self.target_index, chunksize)
+        
+        return forecast, [stat_wts_df, encoder_wts_df, decoder_wts_df]
+        
+    def evaluate(self, forecasts, actuals, aggregate_on=[]):
+        
+        results_df = actuals.merge(forecasts, on=['id','period'], how='inner')
+        
+        assert results_df.shape[0] == forecasts.shape[0], "forecasts & actuals dataframes dissimilar!"
+        
+        results_df['abs_error'] = np.abs(results_df['forecast'] - results_df['actual'])
+        results_df = results_df.groupby(['period']+aggregate_on).agg({'forecast':'sum', 'actual':'sum', 'abs_error':'sum'}).reset_index()
+        
+        # FA & FB
+        results_df['Forecast_Accuracy'] = (1 - results_df['abs_error']/np.maximum(results_df['actual'], 1.0))*100
+        results_df['Forecast_Bias'] = (results_df['forecast']/np.maximum(results_df['actual'],1.0) - 1)*100
+        
+        return results_df

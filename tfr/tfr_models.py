@@ -1574,12 +1574,8 @@ class VarTransformer_Model(tf.keras.Model):
         
         self.target_linear_transform_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=d_model, use_bias=False)) 
         self.scale_linear_transform_layer = tf.keras.layers.Dense(units=d_model, use_bias=False)
-        
-        self.decoderlag_linear_transform_layers = {}
-        if self.decoder_lags >= 2:
-            for i in range(2, self.decoder_lags+1):
-                colname = "{}_lag_{}".format(self.target_col_name,i)
-                self.decoderlag_linear_transform_layers[colname] = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=d_model, use_bias=False))
+
+        self.decoderlag_linear_transform_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=d_model, use_bias=False))
             
         if len(self.stat_num_col_names)>0:
             self.stat_linear_transform_layers = {}
@@ -1600,6 +1596,10 @@ class VarTransformer_Model(tf.keras.Model):
         
         # target
         target = tf.strings.to_number(inputs[:,:,self.target_index:self.target_index+1], out_type=tf.dtypes.float32)
+
+        # for decoder
+        target_copy = tf.identity(target)
+
         target = self.target_linear_transform_layer(target)
         
         # ordered col names list
@@ -1610,16 +1610,16 @@ class VarTransformer_Model(tf.keras.Model):
         # stat, encoder, decoder tensor lists
         static_vars_list = []
         encoder_vars_list = [target[:,:self.hist_len,:]]
-        decoder_vars_list = [target[:,self.hist_len-1:self.hist_len-1+self.f_len,:]]
+        decoder_vars_list = []
         
         past_cols_ordered_list = past_cols_ordered_list + [self.target_col_name]
         future_cols_ordered_list = future_cols_ordered_list + [self.target_col_name]
         
         # decoder start token
-        if self.decoder_lags >= 2:
-            for i in range(2, self.decoder_lags+1):
-                dec_lag_var = target[:,self.hist_len-i:self.hist_len-i+self.f_len,:]
-                dec_lag_var = self.decoderlag_linear_transform_layers["{}_lag_{}".format(self.target_col_name,i)](dec_lag_var)
+        if self.decoder_lags >= 1:
+            for i in range(1, self.decoder_lags+1):
+                dec_lag_var = target_copy[:,self.hist_len-i:self.hist_len-i+self.f_len,:]
+                dec_lag_var = self.decoderlag_linear_transform_layer(dec_lag_var)
                 decoder_vars_list.append(dec_lag_var)
                 future_cols_ordered_list = future_cols_ordered_list + ["{}_lag_{}".format(self.target_col_name,i)]
         

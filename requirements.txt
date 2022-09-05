@@ -9,3 +9,4 @@ holoviews
 hvplot
 ennemi
 statsmodels
+protobuf==3.20.*

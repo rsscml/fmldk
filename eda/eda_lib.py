@@ -355,6 +355,9 @@ class eda:
             return x
         
         # calculate stationarity columns
+        data = data.groupby([id_col]).filter(lambda x: len(x) > max(10, (len(time_lags) + 6)))
+        data = data.groupby([id_col]).filter(lambda x: len(x[target_col].unique()) > 1)
+
         groups = data.groupby(id_col)
         adf_df = Parallel(n_jobs=self.PARALLEL_DATA_JOBS, batch_size=self.PARALLEL_DATA_JOBS_BATCHSIZE)(delayed(adf_test)(x) for _,x in groups)
         data = pd.concat(adf_df, axis=0)
@@ -399,7 +402,7 @@ class eda:
                         title = "Corr. coeff density over " + stat_col +  " between " + target_col + " & " + temp_num_col
                         df_temp = df_corr[(df_corr[stat_col]==level)&(df_corr['level_2']==target_col)][[stat_col,id_col,target_col,temp_num_col]]
                         points = hv.Distribution(df_temp[temp_num_col].values).opts(xlabel=target_col + '_' + temp_num_col + '_' + str(lag) + '_corr_coeff',
-                                                                                    ylabel="density_over_" + level,
+                                                                                    ylabel="density_over_" + str(level),
                                                                                     height=plot_size[0], 
                                                                                     width=plot_size[1], 
                                                                                     title=title).opts(tools=['hover'],)              
@@ -484,7 +487,7 @@ class eda:
                         title = "MI density over " + stat_col +  " between " + target_col + " & " + temp_num_col
                         df_level = df_temp[(df_temp[stat_col]==level)&(df_temp['level_2']==lag)]
                         points = hv.Distribution(df_level[temp_num_col].values).opts(xlabel=target_col + '_' + temp_num_col + '_lag_' + str(lag) + '_mi', 
-                                                                                 ylabel='density_over_'+ level,
+                                                                                 ylabel='density_over_'+ str(level),
                                                                                  height=plot_size[0], 
                                                                                  width=plot_size[1],
                                                                                  title=title).opts(tools=['hover'],)
@@ -518,7 +521,7 @@ class eda:
                         title = "MI density over " + stat_col +  " between " + target_col + " & " + temp_cat_col
                         df_level = df_temp[(df_temp[stat_col]==level)&(df_temp['level_2']==lag)]
                         points = hv.Distribution(df_level[temp_cat_col].values).opts(xlabel=target_col + '_' + temp_cat_col + '_lag_' + str(lag) + '_mi', 
-                                                                                 ylabel='density_over_'+level,
+                                                                                 ylabel='density_over_'+str(level),
                                                                                  height=plot_size[0], 
                                                                                  width=plot_size[1],
                                                                                  title=title).opts(tools=['hover'],)

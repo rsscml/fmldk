@@ -1,6 +1,12 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+# In[ ]:
+
+
+#!/usr/bin/env python
+# coding: utf-8
+
 # basic imports
 import pandas as pd
 import numpy as np
@@ -89,7 +95,15 @@ class eda:
             pass
         return data
     
-    def create_report(self, data, time_lags=[-1,0,1], filename='eda.html', n_col=2, plot_size=(400,800), max_static_col_levels=100):
+    def create_report(self, 
+                      data,
+                      charts= ['All'], #['All','Statistics','LinearCorrelations','MI'], 
+                      time_lags=[0], 
+                      filename='eda.html', 
+                      n_col=2, 
+                      plot_size=(400,800), 
+                      max_static_col_levels=100):
+        
         # prepare static cols list
         stat_cols = self.static_num_col_list + self.static_cat_col_list
         if len(stat_cols)==0:
@@ -122,15 +136,75 @@ class eda:
         # save
         output_file(filename)
         
-        # Key counts by static cols
-        plots = []
-        for stat_col in stat_cols:
-                title = 'Count of keys by ' + stat_col
-                df_cat = data.groupby([stat_col]).agg({id_col: lambda x: x.nunique()}).reset_index()
+        inclusions = [s.upper() for s in charts]
+        
+        if ('STATISTICS' in inclusions) or ('ALL' in inclusions):
+        
+            # Key counts by static cols
+            plots = []
+            for stat_col in stat_cols:
+                    title = 'Count of keys by ' + stat_col
+                    df_cat = data.groupby([stat_col]).agg({id_col: lambda x: x.nunique()}).reset_index()
+                    bars = hv.Bars(
+                                data = df_cat,
+                                kdims = [stat_col],
+                                vdims = id_col,
+                                label = title
+                                ).opts(
+                                 show_legend=False,
+                                 height=plot_size[0], 
+                                 width=plot_size[1],
+                                 xrotation=90,
+                                ).opts(
+                                 tools=['hover'], 
+                                )
+                    fig = hv.render(bars)
+                    plots.append(fig)
+
+            html = """<h3>Key Counts by Static Columns</h3>"""
+            sup_title = Div(text=html)
+            subplots = [plots[i:i + n_col] for i in range(0, len(plots), n_col)]   
+            grid = gridplot(subplots)
+            layout_1 = column(sup_title, grid, sizing_mode="stretch_both")
+
+            # multilevel counts
+            stat_col_groups = list(itertools.combinations(stat_cols,2))
+            plots = []
+            for col_grp in stat_col_groups:
+                col_grp = list(col_grp)
+                title = 'Count of Keys by ' + col_grp[0] + ',' + col_grp[1]
+                df_cat = data.groupby(col_grp).agg({id_col: lambda x: x.nunique()}).reset_index()
+                bars = hv.Bars(
+                    data = df_cat,
+                    kdims = col_grp,
+                    vdims = id_col,
+                    label = title
+                    ).opts(
+                    show_legend=False,
+                    height=plot_size[0], 
+                    width=plot_size[1],
+                    xrotation=90,
+                    ).opts(
+                    tools=['hover']
+                    )
+                fig = hv.render(bars)
+                plots.append(fig)
+
+            html = """<h3>Key Counts by Static Columns Combinations</h3>"""
+            sup_title = Div(text=html)
+            subplots = [plots[i:i + n_col] for i in range(0, len(plots), n_col)]   
+            grid = gridplot(subplots)
+            layout_2 = column(sup_title, grid, sizing_mode="stretch_both")
+
+            # target total volume distribution by stat cols
+            plots = []
+            for stat_col in stat_cols:
+                title = 'Distribution of sum of ' + target_col + ' by ' + stat_col
+                df_cat = data.groupby([stat_col]).agg({target_col:'sum'}).reset_index()
                 bars = hv.Bars(
                             data = df_cat,
                             kdims = [stat_col],
-                            vdims = id_col,
+                            vdims = target_col,
                             label = title
                             ).opts(
                              show_legend=False,
@@ -143,194 +217,138 @@ class eda:
                 fig = hv.render(bars)
                 plots.append(fig)
 
-        html = """<h3>Key Counts by Static Columns</h3>"""
-        sup_title = Div(text=html)
-        subplots = [plots[i:i + n_col] for i in range(0, len(plots), n_col)]   
-        grid = gridplot(subplots)
-        layout_1 = column(sup_title, grid, sizing_mode="stretch_both")
-        
-        # multilevel counts
-        stat_col_groups = list(itertools.combinations(stat_cols,2))
-        plots = []
-        for col_grp in stat_col_groups:
-            col_grp = list(col_grp)
-            title = 'Count of Keys by ' + col_grp[0] + ',' + col_grp[1]
-            df_cat = data.groupby(col_grp).agg({id_col: lambda x: x.nunique()}).reset_index()
-            bars = hv.Bars(
-                data = df_cat,
-                kdims = col_grp,
-                vdims = id_col,
-                label = title
-                ).opts(
-                show_legend=False,
-                height=plot_size[0], 
-                width=plot_size[1],
-                xrotation=90,
-                ).opts(
-                tools=['hover']
-                )
-            fig = hv.render(bars)
-            plots.append(fig)
-        
-        html = """<h3>Key Counts by Static Columns Combinations</h3>"""
-        sup_title = Div(text=html)
-        subplots = [plots[i:i + n_col] for i in range(0, len(plots), n_col)]   
-        grid = gridplot(subplots)
-        layout_2 = column(sup_title, grid, sizing_mode="stretch_both")
-        
-        # target total volume distribution by stat cols
-        plots = []
-        for stat_col in stat_cols:
-            title = 'Distribution of sum of ' + target_col + ' by ' + stat_col
-            df_cat = data.groupby([stat_col]).agg({target_col:'sum'}).reset_index()
-            bars = hv.Bars(
-                        data = df_cat,
-                        kdims = [stat_col],
-                        vdims = target_col,
-                        label = title
-                        ).opts(
-                         show_legend=False,
-                         height=plot_size[0], 
-                         width=plot_size[1],
-                         xrotation=90,
-                        ).opts(
-                         tools=['hover'], 
-                        )
-            fig = hv.render(bars)
-            plots.append(fig)
-        
-        html = """<h3>Target Total Distribution by Static Columns</h3>"""
-        sup_title = Div(text=html)
-        subplots = [plots[i:i + n_col] for i in range(0, len(plots), n_col)]   
-        grid = gridplot(subplots)
-        layout_3 = column(sup_title, grid, sizing_mode="stretch_both")
-        
-        # Basic Stats boxplot
-        plots = []
-        for stat_col in stat_cols:
-            title = 'Box & Whisker plot of basic stats of ' + target_col + ' by ' + stat_col
-            df_stat = data.groupby([stat_col, id_col]).agg({target_col:['mean','median','std']})
-            df_stat = df_stat.droplevel(0, axis=1).reset_index()
-            df_stat = pd.melt(df_stat[[stat_col,'mean','median','std']], id_vars=[stat_col], value_vars=['mean','std','median'])
-            df_stat.rename(columns={'value':target_col, 'variable':'statistic'}, inplace=True)
-            boxwhisker = hv.BoxWhisker(
-                                       data = df_stat, 
-                                       kdims = [stat_col, 'statistic'], 
-                                       vdims = target_col, 
-                                       label = title
-                                      ).opts(
-                                       show_legend=False,
-                                       height=plot_size[0], 
-                                       width=plot_size[1],
-                                       xrotation=90,
-                                       box_fill_color=dim('statistic').str(), 
-                                       cmap='Set1'
-                                      ).opts(
-                                       tools=['hover'], 
-                                      )
+            html = """<h3>Target Total Distribution by Static Columns</h3>"""
+            sup_title = Div(text=html)
+            subplots = [plots[i:i + n_col] for i in range(0, len(plots), n_col)]   
+            grid = gridplot(subplots)
+            layout_3 = column(sup_title, grid, sizing_mode="stretch_both")
 
-            fig = hv.render(boxwhisker)
-            plots.append(fig)
-        
-        html = """<h3>Distribution of Basic Statistics as BoxWhiskers plot</h3>"""
-        sup_title = Div(text=html)
-        subplots = [plots[i:i + n_col] for i in range(0, len(plots), n_col)]   
-        grid = gridplot(subplots)
-        layout_4 = column(sup_title, grid, sizing_mode="stretch_both")
-        
-        # CoV Countplot
-        plots = []
-        for stat_col in stat_cols:
-            title = 'Key Counts by CoV by ' + stat_col
-            df_stat = data.groupby([stat_col,id_col]).agg({target_col:['mean','median','std']})
-            df_stat = df_stat.droplevel(0, axis=1).reset_index()
-            df_stat['cov'] = df_stat['std']/df_stat['mean']
-            hist = df_stat.hvplot.hist(y='cov', by=stat_col, bins=20, title=title, height=plot_size[0], width=plot_size[1], legend='top')
-            fig = hv.render(hist)
-            plots.append(fig)
-        
-        html = """<h3>Distribution of Keys by CoV</h3>"""
-        sup_title = Div(text=html)
-        subplots = [plots[i:i + n_col] for i in range(0, len(plots), n_col)]   
-        grid = gridplot(subplots)
-        layout_5 = column(sup_title, grid, sizing_mode="stretch_both")
-        
-        # CoV evolution
-        plots = []
-        for stat_col in stat_cols:
-            title = 'CoV evolution over time by ' + stat_col
-            data['cov_period'] = pd.qcut(data[date_col], q=4, labels=['p25','p50','p75','p100'])
-            df_stat = data.groupby(['cov_period',stat_col,id_col]).agg({target_col:['mean','median','std']})
-            df_stat = df_stat.droplevel(0, axis=1).reset_index()
-            df_stat['cov'] = df_stat['std']/df_stat['mean']
-            hist = df_stat.hvplot.hist(y='cov', ylabel='Count', by=['cov_period',stat_col], bins=20, title=title, legend='top', height=plot_size[0], width=plot_size[1])
-            fig = hv.render(hist)
-            plots.append(fig)
-        
-        html = """<h3>Distribution of Keys by CoV over period quantiles - p25 (1st qtr), p50 (2nd qtr), ...</h3>"""
-        sup_title = Div(text=html)
-        subplots = [plots[i:i + n_col] for i in range(0, len(plots), n_col)]   
-        grid = gridplot(subplots)
-        layout_6 = column(sup_title, grid, sizing_mode="stretch_both")
-        
-        # CoV volume plot
-        plots = []
-        for stat_col in stat_cols:
-                title = 'Volume by CoV by ' + stat_col
-                df_stat = data.groupby([stat_col,id_col]).agg({target_col:['sum','mean','median','std']})
+            # Basic Stats boxplot
+            plots = []
+            for stat_col in stat_cols:
+                title = 'Box & Whisker plot of basic stats of ' + target_col + ' by ' + stat_col
+                df_stat = data.groupby([stat_col, id_col]).agg({target_col:['mean','median','std']})
+                df_stat = df_stat.droplevel(0, axis=1).reset_index()
+                df_stat = pd.melt(df_stat[[stat_col,'mean','median','std']], id_vars=[stat_col], value_vars=['mean','std','median'])
+                df_stat.rename(columns={'value':target_col, 'variable':'statistic'}, inplace=True)
+                boxwhisker = hv.BoxWhisker(
+                                           data = df_stat, 
+                                           kdims = [stat_col, 'statistic'], 
+                                           vdims = target_col, 
+                                           label = title
+                                          ).opts(
+                                           show_legend=False,
+                                           height=plot_size[0], 
+                                           width=plot_size[1],
+                                           xrotation=90,
+                                           box_fill_color=dim('statistic').str(), 
+                                           cmap='Set1'
+                                          ).opts(
+                                           tools=['hover'], 
+                                          )
+
+                fig = hv.render(boxwhisker)
+                plots.append(fig)
+
+            html = """<h3>Distribution of Basic Statistics as BoxWhiskers plot</h3>"""
+            sup_title = Div(text=html)
+            subplots = [plots[i:i + n_col] for i in range(0, len(plots), n_col)]   
+            grid = gridplot(subplots)
+            layout_4 = column(sup_title, grid, sizing_mode="stretch_both")
+
+            # CoV Countplot
+            plots = []
+            for stat_col in stat_cols:
+                title = 'Key Counts by CoV by ' + stat_col
+                df_stat = data.groupby([stat_col,id_col]).agg({target_col:['mean','median','std']})
                 df_stat = df_stat.droplevel(0, axis=1).reset_index()
                 df_stat['cov'] = df_stat['std']/df_stat['mean']
-                bins = [0.0, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 10.0, 1000.0]
-                df_stat['cov_range'] = pd.cut(df_stat['cov'], bins=bins, include_lowest=True)
-                df_stat['cov_range'] = df_stat['cov_range'].astype(str)
-                df_stat = df_stat.groupby([stat_col,'cov_range']).agg({'sum':'sum','mean':'mean'}).reset_index()
-                hist = df_stat.hvplot.bar(x=stat_col, y=['sum'], by='cov_range', rot=90, title=title, legend='top', height=plot_size[0], width=plot_size[1])
+                hist = df_stat.hvplot.hist(y='cov', by=stat_col, bins=20, title=title, height=plot_size[0], width=plot_size[1], legend='top')
                 fig = hv.render(hist)
                 plots.append(fig)
-        
-        html = """<h3>Distribution of Volume by CoV </h3>"""
-        sup_title = Div(text=html)
-        subplots = [plots[i:i + n_col] for i in range(0, len(plots), n_col)]   
-        grid = gridplot(subplots)
-        layout_7 = column(sup_title, grid, sizing_mode="stretch_both")
-        
-        # Data Availability
-        plots = []
-        for stat_col in stat_cols:
-            title = "Count no. of datapoints by " + stat_col
-            df_stat = data.groupby([stat_col,id_col]).agg({target_col:['count','sum']})
-            df_stat = df_stat.droplevel(0, axis=1).reset_index()
-            hist = df_stat.hvplot.hist(y='count', by=[stat_col], bins=10, title=title, height=plot_size[0], width=plot_size[1], legend='top')
-            fig = hv.render(hist)
-            plots.append(fig)
-        
-        html = """<h3>Distribution of Datapoints</h3>"""
-        sup_title = Div(text=html)
-        subplots = [plots[i:i + n_col] for i in range(0, len(plots), n_col)]   
-        grid = gridplot(subplots)
-        layout_8 = column(sup_title, grid, sizing_mode="stretch_both")
-        
-        # Intermittence Plots
-        # NonZero Count fn.
-        def nz_percent(x):
-            nz_perc = np.count_nonzero(x)/len(x)*100
-            return nz_perc
 
-        plots = []
-        for stat_col in stat_cols:
-            title = "Count no. of nonzero datapoints by " + stat_col
-            df_stat = data.groupby([stat_col,id_col]).agg({target_col:[nz_percent]})
-            df_stat = df_stat.droplevel(0, axis=1).reset_index()
-            hist = df_stat.hvplot.hist(y='nz_percent', by=[stat_col], bins=10, title=title, height=plot_size[0], width=plot_size[1], legend='top')
-            fig = hv.render(hist)
-            plots.append(fig)
-        
-        html = """<h3>Distribution of Non-Zero Datapoints</h3>"""
-        sup_title = Div(text=html)
-        subplots = [plots[i:i + n_col] for i in range(0, len(plots), n_col)]   
-        grid = gridplot(subplots)
-        layout_9 = column(sup_title, grid, sizing_mode="stretch_both")
-        
+            html = """<h3>Distribution of Keys by CoV</h3>"""
+            sup_title = Div(text=html)
+            subplots = [plots[i:i + n_col] for i in range(0, len(plots), n_col)]   
+            grid = gridplot(subplots)
+            layout_5 = column(sup_title, grid, sizing_mode="stretch_both")
+
+            # CoV evolution
+            plots = []
+            for stat_col in stat_cols:
+                title = 'CoV evolution over time by ' + stat_col
+                data['cov_period'] = pd.qcut(data[date_col], q=4, labels=['p25','p50','p75','p100'])
+                df_stat = data.groupby(['cov_period',stat_col,id_col]).agg({target_col:['mean','median','std']})
+                df_stat = df_stat.droplevel(0, axis=1).reset_index()
+                df_stat['cov'] = df_stat['std']/df_stat['mean']
+                hist = df_stat.hvplot.hist(y='cov', ylabel='Count', by=['cov_period',stat_col], bins=20, title=title, legend='top', height=plot_size[0], width=plot_size[1])
+                fig = hv.render(hist)
+                plots.append(fig)
+
+            html = """<h3>Distribution of Keys by CoV over period quantiles - p25 (1st qtr), p50 (2nd qtr), ...</h3>"""
+            sup_title = Div(text=html)
+            subplots = [plots[i:i + n_col] for i in range(0, len(plots), n_col)]   
+            grid = gridplot(subplots)
+            layout_6 = column(sup_title, grid, sizing_mode="stretch_both")
+
+            # CoV volume plot
+            plots = []
+            for stat_col in stat_cols:
+                    title = 'Volume by CoV by ' + stat_col
+                    df_stat = data.groupby([stat_col,id_col]).agg({target_col:['sum','mean','median','std']})
+                    df_stat = df_stat.droplevel(0, axis=1).reset_index()
+                    df_stat['cov'] = df_stat['std']/df_stat['mean']
+                    bins = [0.0, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 10.0, 1000.0]
+                    df_stat['cov_range'] = pd.cut(df_stat['cov'], bins=bins, include_lowest=True)
+                    df_stat['cov_range'] = df_stat['cov_range'].astype(str)
+                    df_stat = df_stat.groupby([stat_col,'cov_range']).agg({'sum':'sum','mean':'mean'}).reset_index()
+                    hist = df_stat.hvplot.bar(x=stat_col, y=['sum'], by='cov_range', rot=90, title=title, legend='top', height=plot_size[0], width=plot_size[1])
+                    fig = hv.render(hist)
+                    plots.append(fig)
+
+            html = """<h3>Distribution of Volume by CoV </h3>"""
+            sup_title = Div(text=html)
+            subplots = [plots[i:i + n_col] for i in range(0, len(plots), n_col)]   
+            grid = gridplot(subplots)
+            layout_7 = column(sup_title, grid, sizing_mode="stretch_both")
+
+            # Data Availability
+            plots = []
+            for stat_col in stat_cols:
+                title = "Count no. of datapoints by " + stat_col
+                df_stat = data.groupby([stat_col,id_col]).agg({target_col:['count','sum']})
+                df_stat = df_stat.droplevel(0, axis=1).reset_index()
+                hist = df_stat.hvplot.hist(y='count', by=[stat_col], bins=10, title=title, height=plot_size[0], width=plot_size[1], legend='top')
+                fig = hv.render(hist)
+                plots.append(fig)
+
+            html = """<h3>Distribution of Datapoints</h3>"""
+            sup_title = Div(text=html)
+            subplots = [plots[i:i + n_col] for i in range(0, len(plots), n_col)]   
+            grid = gridplot(subplots)
+            layout_8 = column(sup_title, grid, sizing_mode="stretch_both")
+
+            # Intermittence Plots
+            # NonZero Count fn.
+            def nz_percent(x):
+                nz_perc = np.count_nonzero(x)/len(x)*100
+                return nz_perc
+
+            plots = []
+            for stat_col in stat_cols:
+                title = "Count no. of nonzero datapoints by " + stat_col
+                df_stat = data.groupby([stat_col,id_col]).agg({target_col:[nz_percent]})
+                df_stat = df_stat.droplevel(0, axis=1).reset_index()
+                hist = df_stat.hvplot.hist(y='nz_percent', by=[stat_col], bins=10, title=title, height=plot_size[0], width=plot_size[1], legend='top')
+                fig = hv.render(hist)
+                plots.append(fig)
+
+            html = """<h3>Distribution of Non-Zero Datapoints</h3>"""
+            sup_title = Div(text=html)
+            subplots = [plots[i:i + n_col] for i in range(0, len(plots), n_col)]   
+            grid = gridplot(subplots)
+            layout_9 = column(sup_title, grid, sizing_mode="stretch_both")
+            
         # ts correlation plot (with various numerical & categorical temporal features)
         temp_num_cols = self.temporal_known_num_col_list + self.temporal_unknown_num_col_list
         temp_cat_cols = self.temporal_known_cat_col_list + self.temporal_unknown_cat_col_list
@@ -357,7 +375,7 @@ class eda:
         # calculate stationarity columns
         data = data.groupby([id_col]).filter(lambda x: len(x) > max(10, (len(time_lags) + 6)))
         data = data.groupby([id_col]).filter(lambda x: len(x[target_col].unique()) > 1)
-
+        
         groups = data.groupby(id_col)
         adf_df = Parallel(n_jobs=self.PARALLEL_DATA_JOBS, batch_size=self.PARALLEL_DATA_JOBS_BATCHSIZE)(delayed(adf_test)(x) for _,x in groups)
         data = pd.concat(adf_df, axis=0)
@@ -367,7 +385,16 @@ class eda:
             # reduce temporal/auto correlation using differencing
             for col in [target_col]+temp_num_cols:
                 if x['{}_stationary'.format(col)].max()==0:
-                    x[col] = x[col].diff(periods=1)
+                    x[col] = x[col].diff(periods=1).fillna(x[col])
+                    # check again
+                    result = adfuller(x[col].values)
+                    adf_stat = result[0]
+                    p_val = result[1]
+                    critical_val = min(list(result[4].values()))
+                    if p_val > 0.01:
+                        if adf_stat > critical_val:
+                            # non-stationary; take another difference
+                            x[col] = x[col].diff(periods=1).fillna(x[col])
                 
             x = x.dropna(subset=[target_col]+temp_num_cols)
             
@@ -383,37 +410,38 @@ class eda:
             corr_df.fillna(method='ffill', inplace=True)
 
             return corr_df
-            
-        # Pearson Correlation Distribution
-        plots = []
-        for stat_col in stat_cols:
-            df_stat = data.groupby([stat_col, id_col]).filter(lambda x: len(x) > max(10,(len(time_lags) + 6)))
-            df_stat = df_stat.groupby([stat_col, id_col]).filter(lambda x: len(x[target_col].unique()) > 1)
-            subplots = []
-            for lag in time_lags:
-                #df_corr = df_stat.groupby([stat_col, id_col]).apply(lambda x: pearson_coeff(x, lag)).reset_index()
-                # parallel process
-                groups = df_stat.groupby([stat_col, id_col])
-                corr = Parallel(n_jobs=self.PARALLEL_DATA_JOBS, batch_size=self.PARALLEL_DATA_JOBS_BATCHSIZE)(delayed(pearson_coeff)(x, lag, stat_col, id_col) for _,x in groups)
-                df_corr = pd.concat(corr, axis=0)
-                df_corr = df_corr.reset_index(drop=True)
-                for temp_num_col in temp_num_cols:
-                    for level in df_corr[stat_col].unique().tolist():
-                        title = "Corr. coeff density over " + stat_col +  " between " + target_col + " & " + temp_num_col
-                        df_temp = df_corr[(df_corr[stat_col]==level)&(df_corr['level_2']==target_col)][[stat_col,id_col,target_col,temp_num_col]]
-                        points = hv.Distribution(df_temp[temp_num_col].values).opts(xlabel=target_col + '_' + temp_num_col + '_' + str(lag) + '_corr_coeff',
-                                                                                    ylabel="density_over_" + str(level),
-                                                                                    height=plot_size[0], 
-                                                                                    width=plot_size[1], 
-                                                                                    title=title).opts(tools=['hover'],)              
-                        fig = hv.render(points)
-                        subplots.append(fig)
-            plots.append(subplots)
         
-        html = """<h3>Distribution of linear correlation coefficient</h3>"""
-        sup_title = Div(text=html)
-        grid = gridplot(plots)
-        layout_10 = column(sup_title, grid, sizing_mode="stretch_both")
+        if ('CORRELATIONS' in inclusions) or ('ALL' in inclusions):
+            # Pearson Correlation Distribution
+            plots = []
+            for stat_col in stat_cols:
+                df_stat = data.groupby([stat_col, id_col]).filter(lambda x: len(x) > max(11,(len(time_lags) + 6)))
+                df_stat = df_stat.groupby([stat_col, id_col]).filter(lambda x: len(x[target_col].unique()) > 1)
+                subplots = []
+                for lag in time_lags:
+                    #df_corr = df_stat.groupby([stat_col, id_col]).apply(lambda x: pearson_coeff(x, lag)).reset_index()
+                    # parallel process
+                    groups = df_stat.groupby([stat_col, id_col])
+                    corr = Parallel(n_jobs=self.PARALLEL_DATA_JOBS, batch_size=self.PARALLEL_DATA_JOBS_BATCHSIZE)(delayed(pearson_coeff)(x, lag, stat_col, id_col) for _,x in groups)
+                    df_corr = pd.concat(corr, axis=0)
+                    df_corr = df_corr.reset_index(drop=True)
+                    for temp_num_col in temp_num_cols:
+                        for level in df_corr[stat_col].unique().tolist():
+                            title = "Corr. coeff density over " + stat_col +  " between " + target_col + " & " + temp_num_col
+                            df_temp = df_corr[(df_corr[stat_col]==level)&(df_corr['level_2']==target_col)][[stat_col,id_col,target_col,temp_num_col]]
+                            points = hv.Distribution(df_temp[temp_num_col].values).opts(xlabel=target_col + '_' + temp_num_col + '_' + str(lag) + '_corr_coeff',
+                                                                                        ylabel="density_over_" + str(level),
+                                                                                        height=plot_size[0], 
+                                                                                        width=plot_size[1], 
+                                                                                        title=title).opts(tools=['hover'],)              
+                            fig = hv.render(points)
+                            subplots.append(fig)
+                plots.append(subplots)
+
+            html = """<h3>Distribution of linear correlation coefficient</h3>"""
+            sup_title = Div(text=html)
+            grid = gridplot(plots)
+            layout_10 = column(sup_title, grid, sizing_mode="stretch_both")
         
         # MI specific functions
         rng = np.random.default_rng(1234) 
@@ -422,7 +450,16 @@ class eda:
             # reduce temporal/auto correlation using differencing
             for col in [target_col]+temp_num_cols:
                 if x['{}_stationary'.format(col)].max()==0:
-                    x[col] = x[col].diff(periods=1)
+                    x[col] = x[col].diff(periods=1).fillna(x[col])
+                    # check again
+                    result = adfuller(x[col].values)
+                    adf_stat = result[0]
+                    p_val = result[1]
+                    critical_val = min(list(result[4].values()))
+                    if p_val > 0.01:
+                        if adf_stat > critical_val:
+                            # non-stationary; take another difference
+                            x[col] = x[col].diff(periods=1).fillna(x[col])
             
             x = x.dropna(subset=[target_col]+temp_num_cols)
             
@@ -447,7 +484,7 @@ class eda:
             # reduce temporal/auto correlation using differencing
             for col in [target_col]:
                 if x['{}_stationary'.format(col)].max()==0:
-                    x[col] = x[col].diff(periods=1)
+                    x[col] = x[col].diff(periods=1).fillna(x[col])
 
             x = x.dropna(subset=[target_col] + temp_cat_cols)
             
@@ -469,76 +506,85 @@ class eda:
             
             return emi_df
         
-        # Non-linear Correlation (MI) Distribution - Numeric Columns
-        plots = []  
-        for stat_col in stat_cols: 
-            df_stat = data.groupby([stat_col, id_col]).filter(lambda x: len(x) > max(10,(len(time_lags) + 6)))
-            #df_corr = df_stat.groupby([stat_col, id_col]).apply(lambda x: mi(x)).reset_index()
-            # parallel process
-            groups = df_stat.groupby([stat_col, id_col])
-            emi = Parallel(n_jobs=self.PARALLEL_DATA_JOBS, batch_size=self.PARALLEL_DATA_JOBS_BATCHSIZE)(delayed(mi)(x, stat_col, id_col) for _,x in groups)            
-            df_corr = pd.concat(emi, axis=0)
-            df_corr = df_corr.reset_index(drop=True)
-            subplots = []
-            for temp_num_col in temp_num_cols:
-                df_temp = df_corr[[stat_col,id_col,temp_num_col,'level_2']]
-                for level in df_temp[stat_col].unique().tolist():
-                    for lag in time_lags:
-                        title = "MI density over " + stat_col +  " between " + target_col + " & " + temp_num_col
-                        df_level = df_temp[(df_temp[stat_col]==level)&(df_temp['level_2']==lag)]
-                        points = hv.Distribution(df_level[temp_num_col].values).opts(xlabel=target_col + '_' + temp_num_col + '_lag_' + str(lag) + '_mi', 
-                                                                                 ylabel='density_over_'+ str(level),
-                                                                                 height=plot_size[0], 
-                                                                                 width=plot_size[1],
-                                                                                 title=title).opts(tools=['hover'],)
+        if ('MI' in inclusions) or ('ALL' in inclusions):
+            # Non-linear Correlation (MI) Distribution - Numeric Columns
+            plots = []  
+            for stat_col in stat_cols: 
+                df_stat = data.groupby([stat_col, id_col]).filter(lambda x: len(x) > max(11,(len(time_lags) + 6)))
+                #df_corr = df_stat.groupby([stat_col, id_col]).apply(lambda x: mi(x)).reset_index()
+                # parallel process
+                groups = df_stat.groupby([stat_col, id_col])
+                emi = Parallel(n_jobs=self.PARALLEL_DATA_JOBS, batch_size=self.PARALLEL_DATA_JOBS_BATCHSIZE)(delayed(mi)(x, stat_col, id_col) for _,x in groups)            
+                df_corr = pd.concat(emi, axis=0)
+                df_corr = df_corr.reset_index(drop=True)
+                subplots = []
+                for temp_num_col in temp_num_cols:
+                    df_temp = df_corr[[stat_col,id_col,temp_num_col,'level_2']]
+                    for level in df_temp[stat_col].unique().tolist():
+                        for lag in time_lags:
+                            title = "MI density over " + stat_col +  " between " + target_col + " & " + temp_num_col
+                            df_level = df_temp[(df_temp[stat_col]==level)&(df_temp['level_2']==lag)]
+                            points = hv.Distribution(df_level[temp_num_col].values).opts(xlabel=target_col + '_' + temp_num_col + '_lag_' + str(lag) + '_mi', 
+                                                                                     ylabel='density_over_'+ str(level),
+                                                                                     height=plot_size[0], 
+                                                                                     width=plot_size[1],
+                                                                                     title=title).opts(tools=['hover'],)
 
-                        fig = hv.render(points)
-                        subplots.append(fig)
-            plots.append(subplots)
-        
-        html = """<h3> Non-linear correlation (measured as Mutual Information) plots for Numeric Columns.</h3>"""
-        sup_title = Div(text=html)
-        grid = gridplot(plots)
-        layout_11 = column(sup_title, grid, sizing_mode="stretch_both")
-        
-        # Non-linear Correlation (MI) Distribution - Non-Numeric Columns
-        plots = [] 
-        for stat_col in stat_cols: 
-            df_stat = data.groupby([stat_col, id_col]).filter(lambda x: len(x) > max(10,(len(time_lags) + 6)))
-            df_stat = df_stat.groupby([stat_col, id_col]).filter(lambda x: len(x[target_col].unique()) > 1)
-            #df_corr = df_stat.groupby([stat_col, id_col]).apply(lambda x: mi_discrete(x)).reset_index()
-            #df_corr['level_2'].replace(to_replace=df_corr['level_2'].unique().tolist(), value=time_lags, inplace=True)
-            # parallel process
-            groups = df_stat.groupby([stat_col, id_col])
-            emi = Parallel(n_jobs=self.PARALLEL_DATA_JOBS, batch_size=self.PARALLEL_DATA_JOBS_BATCHSIZE)(delayed(mi_discrete)(x, stat_col, id_col) for _,x in groups)            
-            df_corr = pd.concat(emi, axis=0)
-            df_corr = df_corr.reset_index(drop=True)
-            subplots = []
-            for temp_cat_col in temp_cat_cols:
-                df_temp = df_corr[[stat_col,id_col,temp_cat_col,'level_2']]
-                for level in df_temp[stat_col].unique().tolist():
-                    for lag in time_lags:
-                        title = "MI density over " + stat_col +  " between " + target_col + " & " + temp_cat_col
-                        df_level = df_temp[(df_temp[stat_col]==level)&(df_temp['level_2']==lag)]
-                        points = hv.Distribution(df_level[temp_cat_col].values).opts(xlabel=target_col + '_' + temp_cat_col + '_lag_' + str(lag) + '_mi', 
-                                                                                 ylabel='density_over_'+str(level),
-                                                                                 height=plot_size[0], 
-                                                                                 width=plot_size[1],
-                                                                                 title=title).opts(tools=['hover'],)
+                            fig = hv.render(points)
+                            subplots.append(fig)
+                plots.append(subplots)
 
-                        fig = hv.render(points)
-                        subplots.append(fig)
-            plots.append(subplots)
-        
-        html = """<h3> Non-linear correlation (measured as Mutual Information) plots for Categorical Columns.</h3>"""
-        sup_title = Div(text=html)
-        grid = gridplot(plots)
-        layout_12 = column(sup_title, grid, sizing_mode="stretch_both")
-        
+            html = """<h3> Non-linear correlation (measured as Mutual Information) plots for Numeric Columns.</h3>"""
+            sup_title = Div(text=html)
+            grid = gridplot(plots)
+            layout_11 = column(sup_title, grid, sizing_mode="stretch_both")
+
+            # Non-linear Correlation (MI) Distribution - Non-Numeric Columns
+            plots = [] 
+            for stat_col in stat_cols: 
+                df_stat = data.groupby([stat_col, id_col]).filter(lambda x: len(x) > max(10,(len(time_lags) + 6)))
+                df_stat = df_stat.groupby([stat_col, id_col]).filter(lambda x: len(x[target_col].unique()) > 1)
+                #df_corr = df_stat.groupby([stat_col, id_col]).apply(lambda x: mi_discrete(x)).reset_index()
+                #df_corr['level_2'].replace(to_replace=df_corr['level_2'].unique().tolist(), value=time_lags, inplace=True)
+                # parallel process
+                groups = df_stat.groupby([stat_col, id_col])
+                emi = Parallel(n_jobs=self.PARALLEL_DATA_JOBS, batch_size=self.PARALLEL_DATA_JOBS_BATCHSIZE)(delayed(mi_discrete)(x, stat_col, id_col) for _,x in groups)            
+                df_corr = pd.concat(emi, axis=0)
+                df_corr = df_corr.reset_index(drop=True)
+                subplots = []
+                for temp_cat_col in temp_cat_cols:
+                    df_temp = df_corr[[stat_col,id_col,temp_cat_col,'level_2']]
+                    for level in df_temp[stat_col].unique().tolist():
+                        for lag in time_lags:
+                            title = "MI density over " + stat_col +  " between " + target_col + " & " + temp_cat_col
+                            df_level = df_temp[(df_temp[stat_col]==level)&(df_temp['level_2']==lag)]
+                            points = hv.Distribution(df_level[temp_cat_col].values).opts(xlabel=target_col + '_' + temp_cat_col + '_lag_' + str(lag) + '_mi', 
+                                                                                     ylabel='density_over_'+str(level),
+                                                                                     height=plot_size[0], 
+                                                                                     width=plot_size[1],
+                                                                                     title=title).opts(tools=['hover'],)
+
+                            fig = hv.render(points)
+                            subplots.append(fig)
+                plots.append(subplots)
+
+            html = """<h3> Non-linear correlation (measured as Mutual Information) plots for Categorical Columns.</h3>"""
+            sup_title = Div(text=html)
+            grid = gridplot(plots)
+            layout_12 = column(sup_title, grid, sizing_mode="stretch_both")
+
         # supergrid
-        supergrid = gridplot([layout_1,layout_2,layout_3,layout_4,layout_5,layout_6,layout_7,layout_8,layout_9,layout_10,
-                              layout_11,layout_12], ncols=1)
+        if 'ALL' in inclusions:
+            supergrid = gridplot([layout_1,layout_2,layout_3,layout_4,layout_5,layout_6,layout_7,layout_8,layout_9,layout_10,
+                                  layout_11,layout_12], ncols=1)
+        elif 'STATISTICS' in inclusions:
+            supergrid = gridplot([layout_1,layout_2,layout_3,layout_4,layout_5,layout_6,layout_7,layout_8,layout_9], ncols=1)
+        elif 'CORRELATIONS' in inclusions:
+            supergrid = gridplot([layout_10], ncols=1)
+        elif 'MI' in inclusions:
+            supergrid = gridplot([layout_11,layout_12], ncols=1)
         save(supergrid)
+        
         
     def get_correlations(self, data, time_lags=[-1,0,1]):
         id_col = self.id_col
@@ -578,7 +624,16 @@ class eda:
             # reduce temporal/auto correlation using differencing
             for col in [target_col]+temp_num_cols:
                 if x['{}_stationary'.format(col)].max()==0:
-                    x[col] = x[col].diff(periods=1)
+                    x[col] = x[col].diff(periods=1).fillna(x[col])
+                    # check again
+                    result = adfuller(x[col].values)
+                    adf_stat = result[0]
+                    p_val = result[1]
+                    critical_val = min(list(result[4].values()))
+                    if p_val > 0.01:
+                        if adf_stat > critical_val:
+                            # non-stationary; take another difference
+                            x[col] = x[col].diff(periods=1).fillna(x[col])
 
             x = x.dropna(subset=[target_col]+temp_num_cols)
 
@@ -615,7 +670,16 @@ class eda:
             # reduce temporal/auto correlation using differencing
             for col in [target_col]+temp_num_cols:
                 if x['{}_stationary'.format(col)].max()==0:
-                    x[col] = x[col].diff(periods=1)
+                    x[col] = x[col].diff(periods=1).fillna(x[col])
+                    # check again
+                    result = adfuller(x[col].values)
+                    adf_stat = result[0]
+                    p_val = result[1]
+                    critical_val = min(list(result[4].values()))
+                    if p_val > 0.01:
+                        if adf_stat > critical_val:
+                            # non-stationary; take another difference
+                            x[col] = x[col].diff(periods=1).fillna(x[col])
             
             x = x.dropna(subset=[target_col]+temp_num_cols)
             
@@ -642,7 +706,16 @@ class eda:
             # reduce temporal/auto correlation using differencing
             for col in [target_col]:
                 if x['{}_stationary'.format(col)].max()==0:
-                    x[col] = x[col].diff(periods=1)
+                    x[col] = x[col].diff(periods=1).fillna(x[col])
+                    # check again
+                    result = adfuller(x[col].values)
+                    adf_stat = result[0]
+                    p_val = result[1]
+                    critical_val = min(list(result[4].values()))
+                    if p_val > 0.01:
+                        if adf_stat > critical_val:
+                            # non-stationary; take another difference
+                            x[col] = x[col].diff(periods=1).fillna(x[col])
 
             x = x.dropna(subset=[target_col] + temp_cat_cols)
             
@@ -713,3 +786,4 @@ class eda:
         corr_df = corr_df.merge(mi_disc_df, on=[id_col,'lag'], how='left')
         
         return corr_df
+

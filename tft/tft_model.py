@@ -986,8 +986,13 @@ class TFT_Model(tf.keras.Model):
             o, s, s_wts, p_wts, f_wts = self.model([encoder_vars_list, decoder_vars_list, mask, scale], training=training)
         
         # Average feature weights across time dim
-        p_wts = tf.math.reduce_mean(p_wts, axis=1)
-        f_wts = tf.math.reduce_mean(f_wts, axis=1)
+        #p_wts = tf.math.reduce_mean(p_wts, axis=1)
+        #f_wts = tf.math.reduce_mean(f_wts, axis=1)
+
+        # Retain period-wise importance
+        bs = tf.shape(p_wts)[0]
+        p_wts = tf.reshape(p_wts, [bs * self.hist_len, -1])
+        f_wts = tf.reshape(f_wts, [bs * self.f_len, -1])
         
         return o, s, ([stat_cols_ordered_list,past_cols_ordered_list,future_cols_ordered_list], [s_wts, p_wts, f_wts])
     
@@ -1305,8 +1310,23 @@ def TFT_Infer(model, inputs, loss_type, hist_len, f_len, target_index, num_quant
         
     # weights df merge with id
     stat_wts_df = pd.concat([pd.DataFrame(id_arr.reshape(-1,1)), stat_wts_df], axis=1)
-    encoder_wts_df = pd.concat([pd.DataFrame(id_arr.reshape(-1,1)), encoder_wts_df], axis=1)
-    decoder_wts_df = pd.concat([pd.DataFrame(id_arr.reshape(-1,1)), decoder_wts_df], axis=1)
+
+    # v0.1.38
+    hist_periods = pd.DataFrame(np.arange(hist_len).reshape(-1, )).rename(columns={0: 'period'})
+    hist_periods = pd.concat([hist_periods] * hist_len, ignore_index=True)
+    encoder_wts_df = pd.concat([hist_periods, encoder_wts_df], axis=1)
+    hid_df = pd.DataFrame(np.repeat(id_arr.reshape(-1, 1), hist_len, axis=0))
+    hid_df.columns = ['id']
+    encoder_wts_df = pd.concat([hid_df, encoder_wts_df], axis=1)
+    #encoder_wts_df = pd.concat([pd.DataFrame(id_arr.reshape(-1,1)), encoder_wts_df], axis=1)
+
+    # v0.1.38
+    decoder_wts_df = pd.concat([date_df, decoder_wts_df], axis=1)
+    fid_df = pd.DataFrame(np.repeat(id_arr.reshape(-1, 1), f_len, axis=0))
+    fid_df.columns = ['id']
+    decoder_wts_df = pd.concat([fid_df, decoder_wts_df], axis=1)
+    #decoder_wts_df = pd.concat([pd.DataFrame(id_arr.reshape(-1,1)), decoder_wts_df], axis=1)
+
     print(stat_wts_df.shape, encoder_wts_df.shape, decoder_wts_df.shape)
         
     return forecast_df, stat_wts_df, encoder_wts_df, decoder_wts_df

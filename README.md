@@ -317,15 +317,35 @@ max_static_col_levels (default (int): 100) # If there are too many levels to a s
 
 ````
 
-### New in 0.1.24 - TFT & Decoder Lags
+### New in 0.1.24 - Temporal Fusion Transformer (TFT)
 ````
 TFT sample usage:
 
 import tft
 
-... tft.tft_dataset
-... tft.supported_losses
+# Create Data Object
 
+data_obj = tft.tft_dataset(col_dict,                         # Column Groups dictionary (see above)
+                           window_len=192,                   # Context window size: int(historical series length + forecast_horizon)
+                           fh=24,                            # forecast_horizon
+                           batch=64,                         # Specify larger batch size if using 'prefill_buffers=True' in model.train()
+                           min_nz=1,                         # Minimum non-zero values in the historical sequence to be considered as a training sample
+                           interleave=1,                     # legacy. Leave as it is.
+                           PARALLEL_DATA_JOBS=4,             # Used for parallelisation. Specify as per available hardware.
+                           PARALLEL_DATA_JOBS_BATCHSIZE=128)
+
+col_index_dict = data_obj.col_index_dict # used to ascertain column positions in the dataframe
+vocab = data_obj.vocab_list(df)          # get full vocabulary of columns to be embedded
+
+# Create Train & Test sets
+trainset, testset = data_obj.train_test_dataset(df, 
+                                                train_till=pd.to_datetime('2014-08-08 23:00:00', format="%Y-%m-%d %H:%M:%S"),
+                                                test_till=pd.to_datetime('2014-08-31 23:00:00', format="%Y-%m-%d %H:%M:%S"))
+
+# Create loss function (a list of supported losses can be found by printing tft.supported_losses)
+loss_fn = tft.QuantileLoss_v2(quantiles=[0.5], sample_weights=False)
+
+# Construct Model
 model = tft.Temporal_Fusion_Transformer(col_index_dict = col_index_dict,
                                     vocab_dict = vocab,
                                     num_layers = 1,
@@ -335,16 +355,48 @@ model = tft.Temporal_Fusion_Transformer(col_index_dict = col_index_dict,
                                     max_inp_len = 13,
                                     loss_type = 'Quantile',
                                     num_quantiles=2,
-                                    decoder_start_tokens=4,
+                                    decoder_start_tokens=1,
                                     dropout_rate=0.1)
-
 model.build()
 
-Train & Infer methods are identical to other transformers.
+# Train Model
+model.train(train_dataset,             # trainset obtain from data_objec using the dataobj.train_test_dataset() method 
+            test_dataset,              # testset obtain from data_objec using the dataobj.train_test_dataset() method
+            loss_function,             # Any supported loss function defined in tft.supported_losses
+            metric='MSE',              # Either 'MSE' or 'MAE'
+            learning_rate=0.0001,      # Use higher lr only with valid clipnorm
+            max_epochs=100,
+            min_epochs=10,       
+            prefill_buffers=False,     # Indicates whether to create a static dataset (requires more memory but trains faster)
+            num_train_samples=200000,  # (NOT USED if prefill_buffers=False)
+            num_test_samples=50000,    # (NOT USED if prefill_buffers=False)
+            train_batch_size=64,       # (NOT USED if prefill_buffers=False, Batch Size specified in data object is used instead) 
+            train_steps_per_epoch=200, # (NOT USED if prefill_buffers=True)
+            test_steps_per_epoch=100,  # (NOT USED if prefill_buffers=True)
+            patience=10,               # Max epochs to train without further drop in loss value (use higher patience when prefill_buffers=False)
+            weighted_training=False,   # Whether to compute & optimize on the basis of weighted losses 
+            model_prefix='./tft_model',
+            logdir='/tmp/tft_logs',
+            opt=None,                  # provide own optimizer object (default is Adam/Nadam)             
+            clipnorm=0.1)              # max global norm applied. Used for stable training. Default is 'None'.
 
-For other transformers, one can supply optional parameter decoder_lags (int) during model creation to customize no. of previous target values 
-to be used for decoding purpose. Minimum decoder_lags = 1, maximum decoder_lags = "length of the encoder series". 
-Default: max(int(len(encoder_timesteps)/4),2) 
+mode.train returns the path of best trained model.
+
+# Steps to load pre-trained model
+
+# Re-build model
+model = tft.Temporal_Fusion_Transformer() # Same parameters as the trained model
+model.build()
+
+# load weights
+model.load(model_path=model.train())
+
+# Steps to generate forecast
+# create infer dataset
+infer_dataset, _ = data_obj.infer_dataset(df, history_till=history_till, future_till=future_till)
+
+# infer
+forecast_df, features = model.infer(infer_dataset)
 
 ````
 
@@ -378,12 +430,31 @@ Train & Infer methods are identical to other transformers.
 
 ConvTFR usage:
 
-import ctfr
+import ctfrv2
 
-... ctfr.ctfr_dataset
-... ctfr.supported_losses
+# Create Data Object
 
-var_model = Feature_Weighted_ConvTransformer(col_index_dict = col_index_dict,
+data_obj = ctfrv2.ctfrv2_dataset(col_dict,                   # Column Groups dictionary (see above)
+                           window_len=192,                   # Context window size: int(historical series length + forecast_horizon)
+                           fh=24,                            # forecast_horizon
+                           batch=64,                         # Specify larger batch size if using 'prefill_buffers=True' in model.train()
+                           min_nz=1,                         # Minimum non-zero values in the historical sequence to be considered as a training sample
+                           interleave=1,                     # legacy. Leave as it is.
+                           PARALLEL_DATA_JOBS=4,             # Used for parallelisation. Specify as per available hardware.
+                           PARALLEL_DATA_JOBS_BATCHSIZE=128)
+
+col_index_dict = data_obj.col_index_dict # used to ascertain column positions in the dataframe
+vocab = data_obj.vocab_list(df)          # get full vocabulary of columns to be embedded
+
+# Create Train & Test sets
+trainset, testset = data_obj.train_test_dataset(df, 
+                                                train_till=pd.to_datetime('2014-08-08 23:00:00', format="%Y-%m-%d %H:%M:%S"),
+                                                test_till=pd.to_datetime('2014-08-31 23:00:00', format="%Y-%m-%d %H:%M:%S"))
+
+# Create loss function (a list of supported losses can be found by printing tft.supported_losses)
+loss_fn = ctfrv2.QuantileLoss_v2(quantiles=[0.5], sample_weights=False)
+
+var_model = ctfrv2.Feature_Weighted_ConvTransformer(col_index_dict = col_index_dict,
                                vocab_dict = vocab,
                                num_layers = 2,
                                num_heads = 4,
@@ -397,6 +468,81 @@ var_model = Feature_Weighted_ConvTransformer(col_index_dict = col_index_dict,
                                dropout_rate=0.1)
 
 var_model.build()
+var_model.train(train_dataset,             # trainset obtain from data_objec using the dataobj.train_test_dataset() method 
+            test_dataset,              # testset obtain from data_objec using the dataobj.train_test_dataset() method
+            loss_function,             # Any supported loss function defined in tft.supported_losses
+            metric='MSE',              # Either 'MSE' or 'MAE'
+            learning_rate=0.0001,      # Use higher lr only with valid clipnorm
+            max_epochs=100,
+            min_epochs=10,       
+            prefill_buffers=False,     # Indicates whether to create a static dataset (requires more memory but trains faster)
+            num_train_samples=200000,  # (NOT USED if prefill_buffers=False)
+            num_test_samples=50000,    # (NOT USED if prefill_buffers=False)
+            train_batch_size=64,       # (NOT USED if prefill_buffers=False, Batch Size specified in data object is used instead) 
+            train_steps_per_epoch=200, # (NOT USED if prefill_buffers=True)
+            test_steps_per_epoch=100,  # (NOT USED if prefill_buffers=True)
+            patience=10,               # Max epochs to train without further drop in loss value (use higher patience when prefill_buffers=False)
+            weighted_training=False,   # Whether to compute & optimize on the basis of weighted losses 
+            model_prefix='./tft_model',
+            logdir='/tmp/tft_logs',
+            opt=None,                  # provide own optimizer object (default is Adam/Nadam)             
+            clipnorm=0.1)              # max global norm applied. Used for stable training. Default is 'None'.
+
+var_mode.train returns the path of best trained model.
+
+# Steps to load pre-trained model
+
+# Re-build model
+var_model = ctfrv2.Feature_Weighted_Transformer() # Same parameters as the trained model
+var_model.build()
+
+# load weights
+var_model.load(model_path=var_model.train())
+
+# Steps to generate forecast
+# create infer dataset
+infer_dataset, _ = data_obj.infer_dataset(df, history_till=history_till, future_till=future_till)
+
+# infer
+forecast_df, features = var_model.infer(infer_dataset)
 
 ````
+### New in 0.1.39 - SAGE Model
 
+````
+model = sage.SageModel(col_index_dict = col_index_dict,
+                       vocab_dict = vocab,
+                       num_layers = 4,
+                       num_heads = 4,
+                       kernel_sizes = [1,3,5],
+                       d_model = 160,
+                       forecast_horizon = int(24),
+                       max_inp_len = int(168),
+                       loss_type = 'Quantile',
+                       num_quantiles = 1,                
+                       dropout_rate = 0.1)
+
+# Train Model
+model.train(train_dataset,             # trainset obtain from data_objec using the dataobj.train_test_dataset() method 
+            test_dataset,              # testset obtain from data_objec using the dataobj.train_test_dataset() method
+            loss_function,             # Any supported loss function defined in tft.supported_losses
+            metric='MSE',              # Either 'MSE' or 'MAE'
+            learning_rate=0.0001,      # Use higher lr only with valid clipnorm
+            max_epochs=100,
+            min_epochs=10,       
+            prefill_buffers=False,     # Indicates whether to create a static dataset (requires more memory but trains faster)
+            num_train_samples=200000,  # (NOT USED if prefill_buffers=False)
+            num_test_samples=50000,    # (NOT USED if prefill_buffers=False)
+            train_batch_size=64,       # (NOT USED if prefill_buffers=False, Batch Size specified in data object is used instead) 
+            train_steps_per_epoch=200, # (NOT USED if prefill_buffers=True)
+            test_steps_per_epoch=100,  # (NOT USED if prefill_buffers=True)
+            patience=10,               # Max epochs to train without further drop in loss value (use higher patience when prefill_buffers=False)
+            weighted_training=False,   # Whether to compute & optimize on the basis of weighted losses 
+            model_prefix='./tft_model',
+            logdir='/tmp/tft_logs',
+            opt=None,                  # provide own optimizer object (default is Adam/Nadam)             
+            clipnorm=0.1)              # max global norm applied. Used for stable training. Default is 'None'.
+
+# Inference Steps are similar to TFT or CTFRV2 models
+
+````

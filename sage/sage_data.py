@@ -1,6 +1,4 @@
-#!/usr/bin/env python
-# coding: utf-8
-
+# Databricks notebook source
 import tensorflow as tf
 import tensorflow_probability as tfp
 tfd = tfp.distributions
@@ -17,7 +15,6 @@ import re
 import gc
 import math as m
 import time
-
 # visualization imports
 from bokeh.plotting import figure, output_file, show, output_notebook, save
 from bokeh.models import ColumnDataSource, HoverTool, Div, FactorRange
@@ -26,7 +23,10 @@ from bokeh.palettes import Category10, Category20, Colorblind
 from bokeh.io import reset_output
 from bokeh.models.ranges import DataRange1d
 
-class tfr_dataset:
+# COMMAND ----------
+
+
+class sage_dataset:
     def __init__(self, 
                  col_dict, 
                  window_len, 
@@ -34,8 +34,8 @@ class tfr_dataset:
                  batch, 
                  min_nz,
                  interleave=1, 
-                 PARALLEL_DATA_JOBS=1, 
-                 PARALLEL_DATA_JOBS_BATCHSIZE=64, 
+                 PARALLEL_DATA_JOBS=4,
+                 PARALLEL_DATA_JOBS_BATCHSIZE=128,
                  WORKDIR='/tmp/'):
         """
         col_dict: dictionary of various column groups {id_col:'',
@@ -86,7 +86,10 @@ class tfr_dataset:
             raise ValueError("Id Column, Target Column or Index Column not specified!")
 
         # full columnset for train/test/infer
-        self.col_list = [self.id_col] + [self.target_col] +                         self.static_num_col_list + self.static_cat_col_list +                         self.temporal_known_num_col_list + self.temporal_unknown_num_col_list +                         self.temporal_known_cat_col_list + self.temporal_unknown_cat_col_list
+        self.col_list = [self.id_col] + [self.target_col] + \
+                        self.static_num_col_list + self.static_cat_col_list + \
+                        self.temporal_known_num_col_list + self.temporal_unknown_num_col_list + \
+                        self.temporal_known_cat_col_list + self.temporal_unknown_cat_col_list
 
         self.cat_col_list = self.static_cat_col_list + self.temporal_known_cat_col_list + self.temporal_unknown_cat_col_list
 
@@ -389,11 +392,13 @@ class tfr_dataset:
         """
         keys_dict, wts_dict = self.get_keys(data)
         self.train_test_batch_size = int(self.batch*len(keys_dict))
+        # accomodate larger batch sizes than no. of keys
+        cycles = int(m.ceil(self.batch/len(keys_dict)))
         while True:
             sample_id = self.select_ids(keys_dict, wts_dict)
             df = data.query("{}==@sample_id".format(self.id_col))
             arr, pad_arr = self.select_arrs(df)
-            
+                
             # -- done for @tf.function retracing reason. May revisit later
             #valid_indices = np.where(np.count_nonzero(arr[:,:self.window_len-self.fh,self.target_index].astype(np.float32)>0,axis=1)>=self.min_nz)
             #arr = arr[valid_indices]
@@ -412,6 +417,10 @@ class tfr_dataset:
             max_keys = data.groupby(self.strata_col_list)[self.id_col].nunique().max()
         else:
             max_keys = data[self.id_col].nunique()
+            
+        # calculate interleave value required to meet max_samples requirement
+        #max_samples_count = data.groupby(self.id_col)[self.target_col].apply(lambda x: max(0,x.count()-self.window_len)).sum()
+        #self.interleave = m.ceil(max_samples_count/self.max_samples_required)
             
         # create arrays 
         model_in = []
@@ -446,12 +455,12 @@ class tfr_dataset:
         model_in = np.vstack(model_in)
         model_out = np.vstack(model_out)
         scale = np.vstack(scale)
-        weights = np.vstack(weights)
-
+        weights = np.vstack(weights)   
+        
         # shuffle
         p = np.random.permutation(len(model_in))
         model_in, model_out, scale, weights = model_in[p], model_out[p], scale[p], weights[p]
-
+        
         return model_in.astype(str), model_out.astype(np.float32), scale.astype(np.float32), weights.astype(np.float32)
         
             
@@ -576,8 +585,8 @@ class tfr_dataset:
         target = sample_arr[..., [self.target_index]].astype(float)
         
         # target outlier correction
-        SU = np.maximum(3.0*np.quantile(target[:,:max_input_len,:], q=0.9, axis=1, keepdims=True), 0)
-        SL = np.minimum(np.quantile(target[:,:max_input_len,:], q=0.05, axis=1, keepdims=True), 0)
+        SU = np.maximum(3.0*np.quantile(target[:,:max_input_len,:], q=0.97, axis=1, keepdims=True), 0)
+        SL = np.minimum(np.quantile(target[:,:max_input_len,:], q=0.01, axis=1, keepdims=True), 0)
         target = np.clip(target, a_min=SL, a_max=SU)
         
         # scale target : target/target_mean
@@ -589,7 +598,7 @@ class tfr_dataset:
         # build model_in array  
         model_in = np.concatenate((sid, target_scaled), axis=-1)
         model_out = target_scaled[:,-self.fh:,:]
-        
+
         if len(self.static_num_indices) > 0:
             static_num = sample_arr[..., self.static_num_indices].astype(float)
             # scale
@@ -656,7 +665,7 @@ class tfr_dataset:
         model_in = np.concatenate((model_in, mask), axis=-1)
 
         # sample weights
-        weights = np.around(np.log10(np.squeeze(target_nz_mean) + 10),2) #/ np.quantile(np.squeeze(target_nz_mean), q=0.8)
+        weights = np.around(np.log10(np.squeeze(target_nz_mean) + 10),2) #/np.quantile(np.squeeze(target_nz_mean), q=0.8)
         weights = np.clip(weights, a_min=1.0, a_max=2.0)
         weights = weights.reshape(-1,1)
         #weights = np.expand_dims(weights.reshape(-1,1), axis=-1)
@@ -670,7 +679,11 @@ class tfr_dataset:
             delta = max(self.train_test_timedelta, self.window_len) 
             test_data = data[data[self.time_index_col]<=self.test_till].groupby(self.id_col).apply(lambda x: x[-delta:]).reset_index(drop=True)
         else:
-            test_data = data[data[self.time_index_col]<=self.test_till].groupby(self.id_col).apply(lambda x: x[-self.window_len:]).reset_index(drop=True)
+            # check if test_till - train_till > window_len
+            test_len = int(data[(data[self.time_index_col]>self.train_till) & (data[self.time_index_col]<=self.test_till)].groupby(self.id_col)[self.target_col].count().max())
+            test_len = test_len + (self.window_len - self.fh)
+            test_data = data[data[self.time_index_col]<=self.test_till].groupby(self.id_col).apply(lambda x: x[-test_len:]).reset_index(drop=True)
+            #test_data = data[data[self.time_index_col]<=self.test_till].groupby(self.id_col).apply(lambda x: x[-self.window_len:]).reset_index(drop=True) #original
         return train_data, test_data
     
     def train_test_dataset(self, data, train_till, test_till, low_memory=True, use_memmap=True, fill_buffer=False):
@@ -714,6 +727,7 @@ class tfr_dataset:
         num_features = x.shape[-1]
         
         if low_memory and (not fill_buffer):
+            print("low_memory: {} and fill_buffer: {}. Use generator".format(low_memory, fill_buffer))
             trainset = tf.data.Dataset.from_generator(lambda: self.data_generator(train_data),
                                                       output_signature=(tf.TensorSpec(shape=(None, self.window_len, num_features), dtype=tf.string),
                                                                         tf.TensorSpec(shape=(None, self.fh, 1), dtype=tf.float32),
@@ -726,6 +740,7 @@ class tfr_dataset:
                                                                        tf.TensorSpec(shape=(None, self.fh, 1), dtype=tf.float32),
                                                                        tf.TensorSpec(shape=(None, 1), dtype=tf.float32)))
         elif (not low_memory) and use_memmap:
+            print("low_memory: {} and use_memmap: {}. Use memmap".format(low_memory, use_memmap))
             SHUFFLE_BUFFER_SIZE = int(m.ceil(train_data[self.id_col].nunique()*0.01)*self.batch)
             BATCH_SIZE = self.batch
             
@@ -758,7 +773,6 @@ class tfr_dataset:
             test_datasets = test_data_generator()
             
             if tf.__version__ < "2.7.0":
-                tf.data.experimental.sample_from_datasets
                 trainset = tf.data.experimental.sample_from_datasets(train_datasets).batch(BATCH_SIZE, drop_remainder=True) #num_parallel_calls=self.PARALLEL_DATA_JOBS)
                 testset = tf.data.experimental.sample_from_datasets(test_datasets).batch(BATCH_SIZE, drop_remainder=False) #num_parallel_calls=self.PARALLEL_DATA_JOBS)
             else:
@@ -766,19 +780,21 @@ class tfr_dataset:
                 testset = tf.data.Dataset.sample_from_datasets(test_datasets).batch(BATCH_SIZE, drop_remainder=False) #num_parallel_calls=self.PARALLEL_DATA_JOBS)
         
         elif (not low_memory) and (not use_memmap):
+            print("low_memory: {} and use_memmap: {}. Use static_dataset".format(low_memory, use_memmap))
             SHUFFLE_BUFFER_SIZE = int(m.ceil(train_data[self.id_col].nunique()*0.1)*self.batch)
             
             model_in_x, model_out_x, scale_x, weights_x = self.static_dataset(train_data, batchsize=self.batch*max(m.ceil(train_data[self.id_col].nunique()*0.01), 200), use_memmap=use_memmap, prefix='train')
             model_in_y, model_out_y, scale_y, weights_y = self.static_dataset(test_data, batchsize=self.batch*max(m.ceil(test_data[self.id_col].nunique()*0.01), 200), use_memmap=use_memmap, prefix='test')
             
             if tf.__version__ < "2.7.0":
-                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).batch(self.batch, drop_remainder=True)
-                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).batch(self.batch, drop_remainder=True)
+                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).shuffle(SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=True).batch(self.batch, drop_remainder=True)
+                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).batch(self.batch, drop_remainder=False)
             else:
-                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).batch(self.batch, drop_remainder=True, num_parallel_calls=self.PARALLEL_DATA_JOBS)
-                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).batch(self.batch, drop_remainder=True, num_parallel_calls=self.PARALLEL_DATA_JOBS)
+                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).shuffle(SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=True).batch(self.batch, drop_remainder=True, num_parallel_calls=self.PARALLEL_DATA_JOBS)
+                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).batch(self.batch, drop_remainder=False, num_parallel_calls=self.PARALLEL_DATA_JOBS)
         
         elif fill_buffer:
+            print("low_memory: {}, fill_buffer: {}. Fill buffer".format(low_memory, fill_buffer))
             #avg_train_samples = max(1, int((train_data.groupby(self.id_col).size().mean() - self.window_len)/self.interleave))
             #num_train_observations = avg_train_samples*train_data[self.id_col].nunique()
             
@@ -787,22 +803,23 @@ class tfr_dataset:
             
             model_in_x, model_out_x, scale_x, _ = self.fill_buffer(train_data) # , num_observations=num_train_observations)
             model_in_y, model_out_y, scale_y, _ = self.fill_buffer(test_data) # , num_observations=num_test_observations)
-
+            
             # weights over entire dataset based on scale
-            weights_x = np.around(np.log10(np.squeeze(scale_x[:, -1:, :]) + 10),2)
-            weights_x = weights_x.reshape(-1, 1)
-            weights_y = np.around(np.log10(np.squeeze(scale_y[:, -1:, :]) + 10),2)
-            weights_y = weights_y.reshape(-1, 1)
-
+            weights_x = np.around(np.log10(np.squeeze(scale_x[:,-1:,:])+10),2)
+            weights_x = weights_x.reshape(-1,1)
+            
+            weights_y = np.around(np.log10(np.squeeze(scale_y[:,-1:,:])+10),2)
+            weights_y = weights_y.reshape(-1,1)
+            
             TRAIN_SHUFFLE_BUFFER_SIZE = model_in_x.shape[0] # num_train_observations
             TEST_SHUFFLE_BUFFER_SIZE = model_in_y.shape[0] # num_test_observations
             
             if tf.__version__ < "2.7.0":
-                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).batch(self.train_test_batch_size, drop_remainder=True)
-                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).batch(self.train_test_batch_size, drop_remainder=True)
+                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).shuffle(TRAIN_SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=False).batch(self.train_test_batch_size, drop_remainder=True)
+                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).shuffle(TEST_SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=False).batch(self.train_test_batch_size, drop_remainder=True)
             else:
-                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).batch(self.train_test_batch_size, drop_remainder=True, num_parallel_calls=self.PARALLEL_DATA_JOBS)
-                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).batch(self.train_test_batch_size, drop_remainder=True, num_parallel_calls=self.PARALLEL_DATA_JOBS)
+                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).shuffle(TRAIN_SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=False).batch(self.train_test_batch_size, drop_remainder=True, num_parallel_calls=self.PARALLEL_DATA_JOBS)
+                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).shuffle(TEST_SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=False).batch(self.train_test_batch_size, drop_remainder=True, num_parallel_calls=self.PARALLEL_DATA_JOBS)
          
         return trainset, testset
         
@@ -1088,6 +1105,6 @@ class tfr_dataset:
         supergrid = gridplot(layouts, ncols=1)
         show(supergrid)
 
-
+# COMMAND ----------
 
 

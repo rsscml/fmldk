@@ -576,8 +576,8 @@ class ctfrv2_dataset:
         target = sample_arr[..., [self.target_index]].astype(float)
         
         # target outlier correction
-        SU = np.maximum(3.0*np.quantile(target[:,:max_input_len,:], q=0.9, axis=1, keepdims=True), 0)
-        SL = np.minimum(3.0*np.quantile(target[:,:max_input_len,:], q=0.05, axis=1, keepdims=True), 0)
+        SU = np.maximum(3.0*np.quantile(target[:,:max_input_len,:], q=0.97, axis=1, keepdims=True), 0)
+        SL = np.minimum(np.quantile(target[:,:max_input_len,:], q=0.01, axis=1, keepdims=True), 0)
         target = np.clip(target, a_min=SL, a_max=SU)
         
         # scale target : target/target_mean
@@ -670,7 +670,10 @@ class ctfrv2_dataset:
             delta = max(self.train_test_timedelta, self.window_len) 
             test_data = data[data[self.time_index_col]<=self.test_till].groupby(self.id_col).apply(lambda x: x[-delta:]).reset_index(drop=True)
         else:
-            test_data = data[data[self.time_index_col]<=self.test_till].groupby(self.id_col).apply(lambda x: x[-self.window_len:]).reset_index(drop=True)
+            test_len = int(data[(data[self.time_index_col] > self.train_till) & (data[self.time_index_col] <= self.test_till)].groupby(self.id_col)[self.target_col].count().max())
+            test_len = test_len + (self.window_len - self.fh)
+            test_data = data[data[self.time_index_col] <= self.test_till].groupby(self.id_col).apply(lambda x: x[-test_len:]).reset_index(drop=True)
+            #test_data = data[data[self.time_index_col]<=self.test_till].groupby(self.id_col).apply(lambda x: x[-self.window_len:]).reset_index(drop=True)
         return train_data, test_data
     
     def train_test_dataset(self, data, train_till, test_till, low_memory=True, use_memmap=True, fill_buffer=False):

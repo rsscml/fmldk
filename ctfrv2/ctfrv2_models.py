@@ -1120,6 +1120,10 @@ def ConvVarTransformer_Train(model,
                       learning_rate,
                       max_epochs, 
                       min_epochs,
+                      prefill_buffers,
+                      num_train_samples,
+                      num_test_samples,
+                      train_batch_size,
                       train_steps_per_epoch,
                       test_steps_per_epoch,
                       patience,
@@ -1258,91 +1262,228 @@ def ConvVarTransformer_Train(model,
     model_list = []
     best_model = None
     time_since_improvement = 0
-        
-    # train loop
-    for epoch in range(max_epochs):
-        print("Epoch {}/{}". format(epoch, max_epochs)) 
+    ###################################################################################################################
+
+    if prefill_buffers:
+        print("prefetching training samples ... ")
+        # get batch size
+        batch_size = 0
+        for x, y, s, w in train_dataset.take(1):
+            batch_size = int(x.shape[0])
+
+        x_train = []
+        y_train = []
+        train_scale = []
+        train_wts = []
         for step, (x_batch, y_batch, scale, wts) in enumerate(train_dataset):
-            if step > train_steps_per_epoch:
+            x_train.append(x_batch)
+            y_train.append(y_batch)
+            train_scale.append(scale)
+            train_wts.append(wts)
+            if (step + 1) * batch_size >= num_train_samples:
                 break
-            else:
+
+        # concat
+        x_train = tf.concat(x_train, axis=0)
+        y_train = tf.concat(y_train, axis=0)
+        train_scale = tf.concat(train_scale, axis=0)
+        train_wts = tf.concat(train_wts, axis=0)
+        print("Training Samples Gathered: ", x_train.shape[0])
+
+        print("prefetching test samples ... ")
+        x_test = []
+        y_test = []
+        test_scale = []
+        test_wts = []
+        for step, (x_batch, y_batch, scale, wts) in enumerate(test_dataset):
+            x_test.append(x_batch)
+            y_test.append(y_batch)
+            test_scale.append(scale)
+            test_wts.append(wts)
+            if (step + 1) * batch_size >= num_test_samples:
+                break
+
+        # concat
+        x_test = tf.concat(x_test, axis=0)
+        y_test = tf.concat(y_test, axis=0)
+        test_scale = tf.concat(test_scale, axis=0)
+        test_wts = tf.concat(test_wts, axis=0)
+        print("Test Samples Gathered: ", x_test.shape[0])
+
+        num_train_batches = int(x_train.shape[0] // train_batch_size)
+        num_test_batches = int(x_test.shape[0] // train_batch_size)
+
+        for epoch in range(max_epochs):
+            print("Epoch {}/{}".format(epoch, max_epochs))
+            for i in range(num_train_batches):
+                x_batch = x_train[i * train_batch_size:(i + 1) * train_batch_size]
+                y_batch = y_train[i * train_batch_size:(i + 1) * train_batch_size]
+                scale = train_scale[i * train_batch_size:(i + 1) * train_batch_size]
+                wts = train_wts[i * train_batch_size:(i + 1) * train_batch_size]
                 train_loss, train_out = trainstep(model, optimizer, x_batch, y_batch, scale, wts, training=True)
                 out_len = tf.shape(train_out)[1]
                 train_loss_avg.update_state(train_loss)
-                if loss_type in ['Normal','Poisson','Negbin']:
-                    train_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], train_out)
-                elif loss_type in ['Point','Quantile']:
-                    train_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], train_out*scale[:,-out_len:,:])
+                if loss_type in ['Normal', 'Poisson', 'Negbin']:
+                    train_metric.update_state(y_batch[:, -out_len:, :] * scale[:, -out_len:, :], train_out)
+                elif loss_type in ['Point', 'Quantile']:
+                    train_metric.update_state(y_batch[:, -out_len:, :] * scale[:, -out_len:, :],
+                                              train_out * scale[:, -out_len:, :])
                 with train_summary_writer.as_default():
                     tf.summary.scalar('loss', train_loss_avg.result(), step=epoch)
                     tf.summary.scalar('accuracy', train_metric.result(), step=epoch)
-          
-        for step, (x_batch, y_batch, scale, wts) in enumerate(test_dataset):
-            if step > train_steps_per_epoch:
-                break
-            else:
-                test_loss, test_out = teststep(model, x_batch, y_batch, scale, wts, training=False)
+
+            for i in range(num_test_batches):
+                x_batch = x_test[i * train_batch_size:(i + 1) * train_batch_size]
+                y_batch = y_test[i * train_batch_size:(i + 1) * train_batch_size]
+                scale = test_scale[i * train_batch_size:(i + 1) * train_batch_size]
+                wts = test_wts[i * train_batch_size:(i + 1) * train_batch_size]
+                test_loss, test_out = trainstep(model, optimizer, x_batch, y_batch, scale, wts, training=False)
                 out_len = tf.shape(test_out)[1]
                 test_loss_avg.update_state(test_loss)
-                if loss_type in ['Normal','Poisson','Negbin']:
-                    test_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], test_out)
-                elif loss_type in ['Point','Quantile']:
-                    test_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], test_out*scale[:,-out_len:,:])
+                if loss_type in ['Normal', 'Poisson', 'Negbin']:
+                    test_metric.update_state(y_batch[:, -out_len:, :] * scale[:, -out_len:, :], test_out)
+                elif loss_type in ['Point', 'Quantile']:
+                    test_metric.update_state(y_batch[:, -out_len:, :] * scale[:, -out_len:, :],
+                                             test_out * scale[:, -out_len:, :])
                 with test_summary_writer.as_default():
                     tf.summary.scalar('loss', test_loss_avg.result(), step=epoch)
                     tf.summary.scalar('accuracy', test_metric.result(), step=epoch)
-              
-        print("Epoch: {}, train_loss: {}, test_loss: {}, train_metric: {}, test_metric: {}".format(epoch, 
-                                                                                                    train_loss_avg.result().numpy(),
-                                                                                                    test_loss_avg.result().numpy(),
-                                                                                                    train_metric.result().numpy(),
-                                                                                                    test_metric.result().numpy()))
-    
-        # record losses & metric in lists
-        train_loss_results.append(train_loss_avg.result().numpy())
-        train_metric_results.append(train_metric.result().numpy())
-        test_loss_results.append(test_loss_avg.result().numpy())
-        test_metric_results.append(test_metric.result().numpy())
-            
-        # reset states
-        train_loss_avg.reset_states()
-        train_metric.reset_states()
-        test_loss_avg.reset_states()
-        test_metric.reset_states()
-        
-        # Save Model
-        model_path = model_prefix + '_' + str(epoch) 
-        model_list.append(model_path)
-        
-        # track & save best model
-        if test_loss_results[epoch]==np.min(test_loss_results):
-            best_model = model_path
-            tf.keras.models.save_model(model, model_path)
-            # reset time_since_improvement
-            time_since_improvement = 0
-        else:
-            time_since_improvement += 1
-            
-        model_tracker_file.write('best_model path after epochs ' + str(epoch) + ': ' + best_model + '\n')
-        print("Best Model: ", best_model)
-            
-        # remove older models
-        if len(model_list)>patience:
-            for m in model_list[:-patience]:
-                if m != best_model:
-                    try:
-                        shutil.rmtree(m)
-                    except:
-                        pass
-                
-        if (time_since_improvement > patience) and (epoch > min_epochs):
-            print("Terminating Training. Best Model path: {}".format(best_model))
-            model_tracker_file.close()
-            break
-            
-        # write after each epoch
-        model_tracker_file.flush()
-        
+
+            print("Epoch: {}, train_loss: {}, test_loss: {}, train_metric: {}, test_metric: {}".format(epoch,
+                                                                                                       train_loss_avg.result().numpy(),
+                                                                                                       test_loss_avg.result().numpy(),
+                                                                                                       train_metric.result().numpy(),
+                                                                                                       test_metric.result().numpy()))
+
+            # record losses & metric in lists
+            train_loss_results.append(train_loss_avg.result().numpy())
+            train_metric_results.append(train_metric.result().numpy())
+            test_loss_results.append(test_loss_avg.result().numpy())
+            test_metric_results.append(test_metric.result().numpy())
+
+            # reset states
+            train_loss_avg.reset_states()
+            train_metric.reset_states()
+            test_loss_avg.reset_states()
+            test_metric.reset_states()
+
+            # Save Model
+            model_path = model_prefix + '_' + str(epoch)
+            model_list.append(model_path)
+
+            # track & save best model
+            if test_loss_results[epoch] == np.min(test_loss_results):
+                best_model = model_path
+                tf.keras.models.save_model(model, model_path)
+                # reset time_since_improvement
+                time_since_improvement = 0
+            else:
+                time_since_improvement += 1
+
+            model_tracker_file.write('best_model path after epochs ' + str(epoch) + ': ' + best_model + '\n')
+            print("Best Model: ", best_model)
+
+            # remove older models
+            if len(model_list) > patience:
+                for m in model_list[:-patience]:
+                    if m != best_model:
+                        try:
+                            shutil.rmtree(m)
+                        except:
+                            pass
+
+            if (time_since_improvement > patience) and (epoch > min_epochs):
+                print("Terminating Training. Best Model path: {}".format(best_model))
+                model_tracker_file.close()
+                break
+
+            # write after each epoch
+            model_tracker_file.flush()
+    else:
+        # train loop
+        for epoch in range(max_epochs):
+            print("Epoch {}/{}". format(epoch, max_epochs))
+            for step, (x_batch, y_batch, scale, wts) in enumerate(train_dataset):
+                if step > train_steps_per_epoch:
+                    break
+                else:
+                    train_loss, train_out = trainstep(model, optimizer, x_batch, y_batch, scale, wts, training=True)
+                    out_len = tf.shape(train_out)[1]
+                    train_loss_avg.update_state(train_loss)
+                    if loss_type in ['Normal','Poisson','Negbin']:
+                        train_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], train_out)
+                    elif loss_type in ['Point','Quantile']:
+                        train_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], train_out*scale[:,-out_len:,:])
+                    with train_summary_writer.as_default():
+                        tf.summary.scalar('loss', train_loss_avg.result(), step=epoch)
+                        tf.summary.scalar('accuracy', train_metric.result(), step=epoch)
+
+            for step, (x_batch, y_batch, scale, wts) in enumerate(test_dataset):
+                if step > train_steps_per_epoch:
+                    break
+                else:
+                    test_loss, test_out = teststep(model, x_batch, y_batch, scale, wts, training=False)
+                    out_len = tf.shape(test_out)[1]
+                    test_loss_avg.update_state(test_loss)
+                    if loss_type in ['Normal','Poisson','Negbin']:
+                        test_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], test_out)
+                    elif loss_type in ['Point','Quantile']:
+                        test_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], test_out*scale[:,-out_len:,:])
+                    with test_summary_writer.as_default():
+                        tf.summary.scalar('loss', test_loss_avg.result(), step=epoch)
+                        tf.summary.scalar('accuracy', test_metric.result(), step=epoch)
+
+            print("Epoch: {}, train_loss: {}, test_loss: {}, train_metric: {}, test_metric: {}".format(epoch,
+                                                                                                        train_loss_avg.result().numpy(),
+                                                                                                        test_loss_avg.result().numpy(),
+                                                                                                        train_metric.result().numpy(),
+                                                                                                        test_metric.result().numpy()))
+
+            # record losses & metric in lists
+            train_loss_results.append(train_loss_avg.result().numpy())
+            train_metric_results.append(train_metric.result().numpy())
+            test_loss_results.append(test_loss_avg.result().numpy())
+            test_metric_results.append(test_metric.result().numpy())
+
+            # reset states
+            train_loss_avg.reset_states()
+            train_metric.reset_states()
+            test_loss_avg.reset_states()
+            test_metric.reset_states()
+
+            # Save Model
+            model_path = model_prefix + '_' + str(epoch)
+            model_list.append(model_path)
+
+            # track & save best model
+            if test_loss_results[epoch]==np.min(test_loss_results):
+                best_model = model_path
+                tf.keras.models.save_model(model, model_path)
+                # reset time_since_improvement
+                time_since_improvement = 0
+            else:
+                time_since_improvement += 1
+
+            model_tracker_file.write('best_model path after epochs ' + str(epoch) + ': ' + best_model + '\n')
+            print("Best Model: ", best_model)
+
+            # remove older models
+            if len(model_list)>patience:
+                for m in model_list[:-patience]:
+                    if m != best_model:
+                        try:
+                            shutil.rmtree(m)
+                        except:
+                            pass
+
+            if (time_since_improvement > patience) and (epoch > min_epochs):
+                print("Terminating Training. Best Model path: {}".format(best_model))
+                model_tracker_file.close()
+                break
+
+            # write after each epoch
+            model_tracker_file.flush()
+
     return best_model
         
 def ConvVarTransformer_Infer(model, inputs, loss_type, hist_len, f_len, target_index, num_quantiles):
@@ -1586,16 +1727,20 @@ class Feature_Weighted_ConvTransformer:
               train_dataset, 
               test_dataset,
               loss_function, 
-              metric, 
-              learning_rate,
-              max_epochs, 
-              min_epochs,
-              train_steps_per_epoch,
-              test_steps_per_epoch,
-              patience,
-              weighted_training,
-              model_prefix,
-              logdir,
+              metric='MSE',
+              learning_rate=0.0001,
+              max_epochs=100,
+              min_epochs=10,
+              prefill_buffers=False,
+              num_train_samples=200000,
+              num_test_samples=50000,
+              train_batch_size=64,
+              train_steps_per_epoch=200,
+              test_steps_per_epoch=100,
+              patience=10,
+              weighted_training=False,
+              model_prefix='./ctfrv2_model',
+              logdir='/tmp/ctfrv2_logs',
               opt=None,
               clipnorm=None):
         
@@ -1612,6 +1757,10 @@ class Feature_Weighted_ConvTransformer:
                                           learning_rate,
                                           max_epochs, 
                                           min_epochs,
+                                          prefill_buffers,
+                                          num_train_samples,
+                                          num_test_samples,
+                                          train_batch_size,
                                           train_steps_per_epoch,
                                           test_steps_per_epoch,
                                           patience,

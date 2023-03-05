@@ -33,6 +33,7 @@ class sage_dataset:
                  fh, 
                  batch, 
                  min_nz,
+                 scaling_method='mean_scaling',
                  interleave=1, 
                  PARALLEL_DATA_JOBS=4,
                  PARALLEL_DATA_JOBS_BATCHSIZE=128,
@@ -62,6 +63,7 @@ class sage_dataset:
         self.fh = fh
         self.batch = batch
         self.min_nz = min_nz
+        self.scaling_method = scaling_method
         self.interleave = interleave
         self.PARALLEL_DATA_JOBS = PARALLEL_DATA_JOBS
         self.PARALLEL_DATA_JOBS_BATCHSIZE = PARALLEL_DATA_JOBS_BATCHSIZE
@@ -589,11 +591,24 @@ class sage_dataset:
         SL = np.minimum(np.quantile(target[:,:max_input_len,:], q=0.01, axis=1, keepdims=True), 0)
         target = np.clip(target, a_min=SL, a_max=SU)
         
-        # scale target : target/target_mean
-        target_nz_count = np.maximum(np.count_nonzero(np.abs(target[:,:max_input_len,:]), axis=1).reshape(-1,1,1), 1.0)
-        target_sum = np.sum(np.abs(target[:,:max_input_len,:]), axis=1, keepdims=True)
-        target_nz_mean = np.divide(target_sum, target_nz_count) + 1.0
-        target_scaled = np.divide(target, target_nz_mean)
+        # scale target : target/target_mean -- old
+        #target_nz_count = np.maximum(np.count_nonzero(np.abs(target[:,:max_input_len,:]), axis=1).reshape(-1,1,1), 1.0)
+        #target_sum = np.sum(np.abs(target[:,:max_input_len,:]), axis=1, keepdims=True)
+        #target_nz_mean = np.divide(target_sum, target_nz_count) + 1.0
+        #target_scaled = np.divide(target, target_nz_mean)
+
+        # scale target : target/target_mean -- new
+        if self.scaling_method == 'mean_scaling':
+            target_nz_count = np.maximum(
+                np.count_nonzero(np.abs(target[:, :max_input_len, :]), axis=1).reshape(-1, 1, 1), 1.0)
+            target_sum = np.sum(np.abs(target[:, :max_input_len, :]), axis=1, keepdims=True)
+            target_nz_mean = np.divide(target_sum, target_nz_count) + 1.0
+            target_scaled = np.divide(target, target_nz_mean)
+        elif self.scaling_method == 'standard_scaling':
+            target_mean = np.mean(target[:, :max_input_len, :], axis=1, keepdims=True)
+            target_stddev = np.std(target[:, :max_input_len, :], axis=1, keepdims=True)
+            target_scaled = np.divide(np.subtract(target, target_mean), target_stddev)
+            target_scaled = np.nan_to_num(target_scaled)  # correct where stddev is 0
         
         # build model_in array  
         model_in = np.concatenate((sid, target_scaled), axis=-1)
@@ -602,10 +617,10 @@ class sage_dataset:
         if len(self.static_num_indices) > 0:
             static_num = sample_arr[..., self.static_num_indices].astype(float)
             # scale
-            static_nz_count = np.maximum(np.count_nonzero(np.abs(static_num), axis=1).reshape(-1,1,len(self.static_num_indices)), 1.0)
-            static_sum = np.sum(np.abs(static_num), axis=1, keepdims=True)
-            static_nz_mean = np.divide(static_sum, static_nz_count) + 1.0
-            static_num = np.divide(static_num, static_nz_mean)
+            #static_nz_count = np.maximum(np.count_nonzero(np.abs(static_num), axis=1).reshape(-1,1,len(self.static_num_indices)), 1.0)
+            #static_sum = np.sum(np.abs(static_num), axis=1, keepdims=True)
+            #static_nz_mean = np.divide(static_sum, static_nz_count) + 1.0
+            #static_num = np.divide(static_num, static_nz_mean)
             # merge
             model_in = np.concatenate((model_in, static_num), axis=-1)
             
@@ -616,21 +631,48 @@ class sage_dataset:
 
         if len(self.temporal_known_num_indices) > 0:
             known_num = sample_arr[..., self.temporal_known_num_indices].astype(float)
-            # scale
-            known_nz_count = np.maximum(np.count_nonzero(np.abs(known_num), axis=1).reshape(-1,1,len(self.temporal_known_num_indices)), 1.0)
-            known_sum = np.sum(np.abs(known_num), axis=1, keepdims=True)
-            known_nz_mean = np.divide(known_sum, known_nz_count) + 1.0
-            known_num = np.divide(known_num, known_nz_mean)
+            # scale -- old
+            #known_nz_count = np.maximum(np.count_nonzero(np.abs(known_num), axis=1).reshape(-1,1,len(self.temporal_known_num_indices)), 1.0)
+            #known_sum = np.sum(np.abs(known_num), axis=1, keepdims=True)
+            #known_nz_mean = np.divide(known_sum, known_nz_count) + 1.0
+            #known_num = np.divide(known_num, known_nz_mean)
+            # scale -- new
+            if self.scaling_method == 'mean_scaling':
+                known_nz_count = np.maximum(
+                    np.count_nonzero(np.abs(known_num), axis=1).reshape(-1, 1, len(self.temporal_known_num_indices)),
+                    1.0)
+                known_sum = np.sum(np.abs(known_num), axis=1, keepdims=True)
+                known_nz_mean = np.divide(known_sum, known_nz_count) + 1.0
+                known_num = np.divide(known_num, known_nz_mean)
+            elif self.scaling_method == 'standard_scaling':
+                known_mean = np.mean(known_num, axis=1, keepdims=True)
+                known_stddev = np.std(known_num, axis=1, keepdims=True)
+                known_num = np.divide(np.subtract(known_num, known_mean), known_stddev)
+                known_num = np.nan_to_num(known_num)
             # merge
             model_in = np.concatenate((model_in, known_num), axis=-1)
 
         if len(self.temporal_unknown_num_indices) > 0:
             unknown_num = sample_arr[..., self.temporal_unknown_num_indices].astype(float)
-            # scale
-            unknown_nz_count = np.maximum(np.count_nonzero(np.abs(unknown_num[:,:max_input_len,:]), axis=1).reshape(-1,1,len(self.temporal_unknown_num_indices)), 1.0)
-            unknown_sum = np.sum(np.abs(unknown_num[:,:max_input_len,:]), axis=1, keepdims=True)
-            unknown_nz_mean = np.divide(unknown_sum, unknown_nz_count) + 1.0
-            unknown_num = np.divide(unknown_num, unknown_nz_mean)
+            # scale -- old
+            #unknown_nz_count = np.maximum(np.count_nonzero(np.abs(unknown_num[:,:max_input_len,:]), axis=1).reshape(-1,1,len(self.temporal_unknown_num_indices)), 1.0)
+            #unknown_sum = np.sum(np.abs(unknown_num[:,:max_input_len,:]), axis=1, keepdims=True)
+            #unknown_nz_mean = np.divide(unknown_sum, unknown_nz_count) + 1.0
+            #unknown_num = np.divide(unknown_num, unknown_nz_mean)
+            # scale -- new
+            if self.scaling_method == 'mean_scaling':
+                unknown_nz_count = np.maximum(
+                    np.count_nonzero(np.abs(unknown_num[:, :max_input_len, :]), axis=1).reshape(-1, 1,
+                                                                                                len(self.temporal_unknown_num_indices)),
+                    1.0)
+                unknown_sum = np.sum(np.abs(unknown_num[:, :max_input_len, :]), axis=1, keepdims=True)
+                unknown_nz_mean = np.divide(unknown_sum, unknown_nz_count) + 1.0
+                unknown_num = np.divide(unknown_num, unknown_nz_mean)
+            elif self.scaling_method == 'standard_scaling':
+                unknown_mean = np.mean(unknown_num[:, :max_input_len, :], axis=1, keepdims=True)
+                unknown_stddev = np.std(unknown_num[:, :max_input_len, :], axis=1, keepdims=True)
+                unknown_num = np.divide(np.subtract(unknown_num, unknown_mean), unknown_stddev)
+                unknown_num = np.nan_to_num(unknown_num)
             # merge
             model_in = np.concatenate((model_in, unknown_num), axis=-1)
    
@@ -647,11 +689,27 @@ class sage_dataset:
         rel_age = np.broadcast_to((np.arange(0,sequence_len,1)/sequence_len).reshape(-1,1), target.shape)
         model_in = np.concatenate((model_in, rel_age), axis=-1) 
         
-        # scale
-        scale_in = np.broadcast_to(target_nz_mean, target.shape)
+        # scale -- old
+        #scale_in = np.broadcast_to(target_nz_mean, target.shape)
+        #model_in = np.concatenate((model_in, scale_in), axis=-1)
+        #scale_out = np.broadcast_to(target_nz_mean, model_out.shape)
+
+        # scale -- new
+        if self.scaling_method == 'mean_scaling':
+            scale_in = np.broadcast_to(target_nz_mean, target.shape)
+        elif self.scaling_method == 'standard_scaling':
+            scale_mean = np.broadcast_to(target_mean, target.shape)
+            scale_std = np.broadcast_to(target_stddev, target.shape)
+            scale_in = np.concatenate((scale_mean, scale_std), axis=-1)
+
         model_in = np.concatenate((model_in, scale_in), axis=-1)
-        scale_out = np.broadcast_to(target_nz_mean, model_out.shape)
-            
+        if self.scaling_method == 'mean_scaling':
+            scale_out = np.broadcast_to(target_nz_mean, model_out.shape)
+        elif self.scaling_method == 'standard_scaling':
+            scale_mean_out = np.broadcast_to(target_mean, model_out.shape)
+            scale_std_out = np.broadcast_to(target_stddev, model_out.shape)
+            scale_out = np.concatenate((scale_mean_out, scale_std_out), axis=-1)
+
         mask_list = []
         for pad_len in pad_arr:
             if pad_len > 0:
@@ -664,9 +722,16 @@ class sage_dataset:
         mask = np.vstack(mask_list).reshape(-1,sequence_len,1)
         model_in = np.concatenate((model_in, mask), axis=-1)
 
-        # sample weights
-        weights = np.around(np.log10(np.squeeze(target_nz_mean) + 10),2) #/np.quantile(np.squeeze(target_nz_mean), q=0.8)
-        weights = np.clip(weights, a_min=1.0, a_max=2.0)
+        # sample weights -- old
+        #weights = np.around(np.log10(np.squeeze(target_nz_mean) + 10),2) #/np.quantile(np.squeeze(target_nz_mean), q=0.8)
+        # sample weights -- new
+        if self.scaling_method == 'mean_scaling':
+            weights = np.around(np.log10(np.squeeze(target_nz_mean) + 10),
+                                2)  # /np.quantile(np.squeeze(target_nz_mean), q=0.8)
+        elif self.scaling_method == 'standard_scaling':
+            weights = np.around(np.log10(np.squeeze(target_mean) + 10), 2)
+
+        weights = np.clip(weights, a_min=1.0, a_max=5.0)
         weights = weights.reshape(-1,1)
         #weights = np.expand_dims(weights.reshape(-1,1), axis=-1)
         #weights = np.tile(weights, [1,sequence_len,1])
@@ -725,19 +790,20 @@ class sage_dataset:
         check_gen = self.data_generator(train_data)
         x, y, s, w = next(check_gen)
         num_features = x.shape[-1]
+        scale_dims = s.shape[-1]
         
         if low_memory and (not fill_buffer):
             print("low_memory: {} and fill_buffer: {}. Use generator".format(low_memory, fill_buffer))
             trainset = tf.data.Dataset.from_generator(lambda: self.data_generator(train_data),
                                                       output_signature=(tf.TensorSpec(shape=(None, self.window_len, num_features), dtype=tf.string),
                                                                         tf.TensorSpec(shape=(None, self.fh, 1), dtype=tf.float32),
-                                                                        tf.TensorSpec(shape=(None, self.fh, 1), dtype=tf.float32),
+                                                                        tf.TensorSpec(shape=(None, self.fh, scale_dims), dtype=tf.float32),
                                                                         tf.TensorSpec(shape=(None, 1), dtype=tf.float32)))
         
             testset = tf.data.Dataset.from_generator(lambda: self.data_generator(test_data),
                                                      output_signature=(tf.TensorSpec(shape=(None, self.window_len, num_features), dtype=tf.string),
                                                                        tf.TensorSpec(shape=(None, self.fh, 1), dtype=tf.float32),
-                                                                       tf.TensorSpec(shape=(None, self.fh, 1), dtype=tf.float32),
+                                                                       tf.TensorSpec(shape=(None, self.fh, scale_dims), dtype=tf.float32),
                                                                        tf.TensorSpec(shape=(None, 1), dtype=tf.float32)))
         elif (not low_memory) and use_memmap:
             print("low_memory: {} and use_memmap: {}. Use memmap".format(low_memory, use_memmap))
@@ -846,8 +912,13 @@ class sage_dataset:
         model_in, model_out, scale, _ = self.preprocess(arr, pad_arr)
         input_tensor = tf.convert_to_tensor(model_in.astype(str), dtype=tf.string)
         
-        # for evaluation
-        actuals_arr = model_out*scale
+        # for evaluation -- old
+        #actuals_arr = model_out*scale
+        # for evaluation -- new
+        if self.scaling_method == 'mean_scaling':
+            actuals_arr = model_out * scale
+        elif self.scaling_method == 'standard_scaling':
+            actuals_arr = model_out * scale[:, :, 1:2] + scale[:, :, 0:1]
         
         if len(self.static_cat_col_list)>0:
             stat_arr_list = []

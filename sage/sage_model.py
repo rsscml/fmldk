@@ -753,9 +753,23 @@ class SageTransformer(tf.keras.Model):
         else:
             decoder_vars_list, mask, scale = inputs
         
-        # scale
-        scale = scale[:,-1:,:]
-        
+        # scale -- old
+        #scale = scale[:,-1:,:]
+        # scale -- new
+        scale = scale[:, -1:, :]
+        s_dim = scale.shape.as_list()[-1]
+
+        if s_dim == 2:
+            # print("standard scaling used")
+            scaler = 'standard_scaler'
+            scale_mean = scale[:, :, 0:1]
+            scale_std = scale[:, :, 1:2]
+        else:
+            # print("mean scaling used")
+            scaler = 'mean_scaler'
+            scale_mean = scale[:, :, 0:1]
+            scale_std = scale[:, :, 0:1]
+
         # static var selection 
         if self.stat_variables:
             static_vec, static_weights = self.static_input_layer(static_vars_list, training=training)
@@ -779,7 +793,11 @@ class SageTransformer(tf.keras.Model):
         if self.loss_fn == 'Point':
             out = self.final_layer(dec_output, training=training)
         elif self.loss_fn == 'Poisson':
-            mean = self.final_layer(dec_output, training=training)*scale
+            if scaler == 'mean_scaler':
+                mean = self.final_layer(dec_output, training=training) * scale
+            elif scaler == 'standard_scaler':
+                mean = self.final_layer(dec_output, training=training) * scale_std + scale_mean
+            #mean = self.final_layer(dec_output, training=training)*scale -- old
             parameters = mean
             out = poisson_sample(mu=mean)
         elif self.loss_fn == 'Quantile':
@@ -788,13 +806,25 @@ class SageTransformer(tf.keras.Model):
             else:
                 out = self.proj_intrcpt(dec_output, training=training)
         elif self.loss_fn == 'Normal':
-            mean = self.m_layer(dec_output, training=training)*scale       # (batch, f_len, 1)
-            stddev = self.s_layer(dec_output, training=training)*scale      # (batch, f_len, 1)
+            if scaler == 'mean_scaler':
+                mean = self.m_layer(dec_output, training=training) * scale  # (batch, f_len, 1)
+                stddev = self.s_layer(dec_output, training=training) * scale  # (batch, f_len, 1)
+            elif scaler == 'standard_scaler':
+                mean = self.m_layer(dec_output, training=training) * scale_std + scale_mean  # (batch, f_len, 1)
+                stddev = self.s_layer(dec_output, training=training) * scale_std  # (batch, f_len, 1)
+            #mean = self.m_layer(dec_output, training=training)*scale       # (batch, f_len, 1)  -- old
+            #stddev = self.s_layer(dec_output, training=training)*scale      # (batch, f_len, 1) -- old
             parameters = tf.concat([mean, stddev], axis=-1)
             out = normal_sample(mean, stddev)
         elif self.loss_fn == 'Negbin':
-            mean = self.m_layer(dec_output, training=training)*scale       # (batch, f_len, 1)
-            alpha = self.a_layer(dec_output, training=training)*tf.sqrt(scale)      # (batch, f_len, 1)
+            if scaler == 'mean_scaler':
+                mean = self.m_layer(dec_output, training=training) * scale  # (batch, f_len, 1)
+                alpha = self.a_layer(dec_output, training=training) * tf.sqrt(scale)  # (batch, f_len, 1)
+            elif scaler == 'standard_scaler':
+                mean = self.m_layer(dec_output, training=training) * scale_std + scale_mean  # (batch, f_len, 1)
+                alpha = self.a_layer(dec_output, training=training) * tf.sqrt(scale_std)  # (batch, f_len, 1)
+            #mean = self.m_layer(dec_output, training=training)*scale       # (batch, f_len, 1) -- old
+            #alpha = self.a_layer(dec_output, training=training)*tf.sqrt(scale)      # (batch, f_len, 1) -- old
             parameters = tf.concat([mean, alpha], axis=-1)
             out = negbin_sample(mean, alpha)
         else:
@@ -903,7 +933,7 @@ class SageTransformer_Model(tf.keras.Model):
         # Create Numerical Embedding (Linear Transform) Layers
         
         self.target_linear_transform_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=d_model, use_bias=False)) 
-        #self.scale_linear_transform_layer = tf.keras.layers.Dense(units=d_model, use_bias=False)
+        self.scale_linear_transform_layer = tf.keras.layers.Dense(units=d_model, use_bias=False)
         self.hist_encode_layer = CausalConvEncoder(d_model=d_model, num_layers=self.num_causal_layers) 
       
         if len(self.stat_num_col_names)>0:
@@ -917,10 +947,15 @@ class SageTransformer_Model(tf.keras.Model):
                 self.known_linear_transform_layers[colname] = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=d_model, use_bias=False))
                 
     def call(self, inputs, training):
+
+        # total_dim
+        t_dim = inputs.shape.as_list()[-1] - 3  # reduce 2 dims for mask,rel_age,scale
+        dim_counter = 0
         
         # target
         target = tf.strings.to_number(inputs[:,:,self.target_index:self.target_index+1], out_type=tf.dtypes.float32)
-        
+        dim_counter += 1
+
         # transform to model dim
         target = self.target_linear_transform_layer(target)
         
@@ -947,6 +982,7 @@ class SageTransformer_Model(tf.keras.Model):
                 stat_var = self.stat_linear_transform_layers[col](stat_var)
                 # append
                 static_vars_list.append(stat_var)
+                dim_counter += 1
         
         # static embeddings
         if len(self.stat_cat_indices)>0:
@@ -957,7 +993,8 @@ class SageTransformer_Model(tf.keras.Model):
                 stat_var_embeddings = self.stat_embed_layers.get(col)(stat_var_id)
                 # append
                 static_vars_list.append(stat_var_embeddings[:,-1,:])
-                
+                dim_counter += 1
+
         # known numeric 
         if len(self.known_num_indices)>0:
             future_cols_ordered_list = future_cols_ordered_list + self.known_num_col_names
@@ -966,6 +1003,7 @@ class SageTransformer_Model(tf.keras.Model):
                 num_vars = self.known_linear_transform_layers[col](num_vars)
                 # append
                 decoder_vars_list.append(num_vars)
+                dim_counter += 1
                     
         # known embeddings
         if len(self.known_cat_indices)>0:
@@ -976,19 +1014,40 @@ class SageTransformer_Model(tf.keras.Model):
                 cat_var_embeddings = self.temporal_known_embed_layers.get(col)(cat_var_id)
                 # append
                 decoder_vars_list.append(cat_var_embeddings)
-                     
-        # rel_age
-        rel_age = tf.strings.to_number(inputs[:,:-1,-3:-2], out_type=tf.dtypes.float32)
-        rel_age_dec = self.known_linear_transform_layers['rel_age'](rel_age)
-        # append
-        decoder_vars_list.append(rel_age_dec)
-        
-        # scale
-        scale = tf.strings.to_number(inputs[:,:-1,-2:-1], out_type=tf.dtypes.float32)
-        #scale_log = tf.math.log(tf.math.sqrt(scale))
-        #scale_log = self.scale_linear_transform_layer(scale_log[:,-1,:])
-        # append
-        #static_vars_list.append(scale_log)
+                dim_counter += 1
+
+        # remaining_dim
+        r_dim = t_dim - dim_counter
+
+        # default scale
+        scale = tf.strings.to_number(inputs[:, :-1, -2:-1], out_type=tf.dtypes.float32)
+
+        if r_dim == 2:  # standard scaling used (mean,std)
+            # print(" standard r_dim")
+            # rel_age
+            rel_age = tf.strings.to_number(inputs[:, :-1, -4:-3], out_type=tf.dtypes.float32)
+            rel_age_dec = self.known_linear_transform_layers['rel_age'](rel_age)
+            # append
+            decoder_vars_list.append(rel_age_dec)
+            # scale
+            scale = tf.strings.to_number(inputs[:, :-1, -3:-1], out_type=tf.dtypes.float32)
+            scale_log = tf.math.log(tf.math.sqrt(scale))
+            scale_log = self.scale_linear_transform_layer(scale_log[:,-1,:])
+            # append
+            static_vars_list.append(scale_log)
+        elif r_dim == 1:
+            # print(" mean r_dim")
+            # rel_age
+            rel_age = tf.strings.to_number(inputs[:, :-1, -3:-2], out_type=tf.dtypes.float32)
+            rel_age_dec = self.known_linear_transform_layers['rel_age'](rel_age)
+            # append
+            decoder_vars_list.append(rel_age_dec)
+            # scale
+            scale = tf.strings.to_number(inputs[:, :-1, -2:-1], out_type=tf.dtypes.float32)
+            scale_log = tf.math.log(tf.math.sqrt(scale))
+            scale_log = self.scale_linear_transform_layer(scale_log[:,-1,:])
+            # append
+            static_vars_list.append(scale_log)
         
         # Append additional columns
         #stat_cols_ordered_list = stat_cols_ordered_list + ['scale']
@@ -1048,12 +1107,21 @@ def SageTransformer_Train(model,
     def trainstep(model, optimizer, x_train, y_train, scale, wts, training):
         with tf.GradientTape() as tape:
             o, s, f = model(x_train, training=training)
-            out_len = tf.shape(s)[1]
+            out_len = s.shape.as_list()[1] #tf.shape(s)[1]
+            s_dim = scale.shape.as_list()[-1] #tf.shape(scale)[-1]
             if loss_type in ['Normal','Poisson','Negbin']:
-                if weighted_training:
-                    loss = loss_function(y_train*scale[:,-out_len:,:], [s, wts])
+                if s_dim == 1:
+                    if weighted_training:
+                        loss = loss_function(y_train * scale[:, -out_len:, :], [s, wts])
+                    else:
+                        loss = loss_function(y_train * scale[:, -out_len:, :], s)
                 else:
-                    loss = loss_function(y_train*scale[:,-out_len:,:], s)                           
+                    s_mean = scale[:, -out_len:, 0:1]
+                    s_std = scale[:, -out_len:, 1:2]
+                    if weighted_training:
+                        loss = loss_function(y_train * s_std + s_mean, [s, wts])
+                    else:
+                        loss = loss_function(y_train * s_std + s_mean, s)
             elif loss_type in ['Point']:
                 if weighted_training:                               
                     loss = loss_function(y_train, [o, wts])
@@ -1073,12 +1141,21 @@ def SageTransformer_Train(model,
     @tf.function
     def teststep(model, x_test, y_test, scale, wts, training):
         o, s, f = model(x_test, training=training)
-        out_len = tf.shape(s)[1]
+        out_len = s.shape.as_list()[1]  # tf.shape(s)[1]
+        s_dim = scale.shape.as_list()[-1]  # tf.shape(scale)[-1]
         if loss_type in ['Normal','Poisson','Negbin']:
-            if weighted_training:
-                loss = loss_function(y_test*scale[:,-out_len:,:], [s, wts])
+            if s_dim == 1:
+                if weighted_training:
+                    loss = loss_function(y_test * scale[:, -out_len:, :], [s, wts])
+                else:
+                    loss = loss_function(y_test * scale[:, -out_len:, :], s)
             else:
-                loss = loss_function(y_test*scale[:,-out_len:,:], s)                           
+                s_mean = scale[:, -out_len:, 0:1]
+                s_std = scale[:, -out_len:, 1:2]
+                if weighted_training:
+                    loss = loss_function(y_test * s_std + s_mean, [s, wts])
+                else:
+                    loss = loss_function(y_test * s_std + s_mean, s)
         elif loss_type in ['Point']:
             if weighted_training:                               
                 loss = loss_function(y_test, [o, wts])
@@ -1389,7 +1466,16 @@ def SageTransformer_Train(model,
         
 def SageTransformer_InferRecursive(model, inputs, loss_type, hist_len, f_len, target_index, num_quantiles):
     infer_tensor, scale, id_arr, date_arr = inputs
-    scale = scale[:,-1:,-1]
+
+    s_dim = scale.shape[-1]
+
+    if s_dim == 1:
+        scale = scale[:, -1:, -1]
+    else:
+        scale_mean = scale[:, -1:, 0]
+        scale_std = scale[:, -1:, 1]
+
+    #scale = scale[:,-1:,-1]  # old
     window_len = hist_len + f_len
     output = []
     stat_wts_df = None 
@@ -1403,7 +1489,11 @@ def SageTransformer_InferRecursive(model, inputs, loss_type, hist_len, f_len, ta
             dist = dist.numpy()
             output.append(dist[:,i:i+1,0])
             infer_arr = infer_tensor.numpy()
-            infer_arr[:,hist_len:hist_len+i+1,target_index] = out[:,0:i+1,0]/scale
+            #infer_arr[:,hist_len:hist_len+i+1,target_index] = out[:,0:i+1,0]/scale
+            if s_dim == 1:
+                infer_arr[:, hist_len:hist_len + i + 1, target_index] = out[:, 0:i + 1, 0] / scale
+            else:
+                infer_arr[:, hist_len:hist_len + i + 1, target_index] = np.nan_to_num((out[:, 0:i + 1, 0] - scale_mean) / scale_std)
         elif loss_type in ['Point','Quantile']:
             out = out.numpy()
             output.append(out[:,i:i+1,0])
@@ -1438,7 +1528,13 @@ def SageTransformer_InferRecursive(model, inputs, loss_type, hist_len, f_len, ta
     if loss_type in ['Normal','Poisson','Negbin']:
         output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr), axis=1))
     elif loss_type in ['Point','Quantile']:
-        output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr*scale.reshape(-1,1)), axis=1))
+        #output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr*scale.reshape(-1,1)), axis=1))
+        # new
+        if s_dim == 1:
+            output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1, 1), output_arr * scale.reshape(-1, 1)), axis=1))
+        else:
+            output_arr = output_arr * scale_std.reshape(-1, 1) + scale_mean.reshape(-1, 1)
+            output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1, 1), output_arr), axis=1))
     output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0:'id','value':'forecast'})
     output_df = output_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
         
@@ -1519,12 +1615,23 @@ class SageModel:
               weighted_training=False,
               model_prefix='./sage_model',
               logdir='/tmp/sage_logs',
+              load_model=None,
               opt=None,
               clipnorm=None):
-        
-        # Initialize Weights
-        for x,y,s,w in train_dataset.take(1):
-            self.model(x, training=False)
+
+        if load_model is None:
+            # Initialize Weights
+            for x, y, s, w in train_dataset.take(1):
+                self.model(x, training=False)
+        else:
+            # Initialize Weights
+            for x, y, s, w in train_dataset.take(1):
+                self.model(x, training=False)
+            saved_model = tf.keras.models.load_model(load_model)
+            self.model.set_weights(saved_model.get_weights())
+            del saved_model
+            gc.collect()
+            print("Saved model: {} loaded. Continuing training ...".format(load_model))
         
         best_model = SageTransformer_Train(self.model,
                                           train_dataset, 

@@ -510,6 +510,8 @@ forecast_df, features = var_model.infer(infer_dataset)
 ### New in 0.1.39 - SAGE Model
 
 ````
+data_obj = sage.sage_dataset(...,scaling_method = 'mean_scaling') # Choose one of these methods ['mean_scaling','standard_scaling']
+
 model = sage.SageModel(col_index_dict = col_index_dict,
                        vocab_dict = vocab,
                        num_layers = 4,
@@ -540,6 +542,7 @@ model.train(train_dataset,             # trainset obtain from data_objec using t
             weighted_training=False,   # Whether to compute & optimize on the basis of weighted losses 
             model_prefix='./tft_model',
             logdir='/tmp/tft_logs',
+            load_model=None,           # or, path of a previously saved model to continue training
             opt=None,                  # provide own optimizer object (default is Adam/Nadam)             
             clipnorm=0.1)              # max global norm applied. Used for stable training. Default is 'None'.
 

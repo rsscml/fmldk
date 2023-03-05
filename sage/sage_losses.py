@@ -192,6 +192,35 @@ class RMSSELoss(tf.keras.losses.Loss):
         return {** base_config}
 
 
+class SMAPE(tf.keras.losses.Loss):
+    def __init__(self, epsilon=0.1, sample_weights=False, **kwargs):
+        self.sample_weights = sample_weights
+        self.eps = epsilon
+        super().__init__(**kwargs)
+
+    def call(self, actuals, pred):
+        if self.sample_weights:
+            output, wts = pred[0], pred[1]
+            wts = tf.reshape(wts, [-1, 1])
+        else:
+            wts = 1.0
+            output = pred
+        seq_len = tf.shape(output)[1]
+
+        output = tf.cast(tf.reshape(output, [-1, seq_len]), tf.float32)
+        true = tf.cast(tf.reshape(actuals, [-1, seq_len]), tf.float32)
+
+        summ = tf.maximum(tf.abs(true) + tf.abs(output) + self.eps, 0.5 + self.eps)
+        smape = tf.abs(true - output) / summ * 2.0
+        wtd_smape = wts * tf.math.reduce_mean(smape, axis=1, keepdims=True)
+
+        return tf.math.reduce_mean(wtd_smape)
+
+    def get_config(self):
+        base_config = super().get_config()
+        return {**base_config}
+
+
 class RMSE(tf.keras.losses.Loss):
     def __init__(self,sample_weights=False, ** kwargs):
         self.sample_weights = sample_weights
@@ -346,6 +375,7 @@ class Students_NLL_Loss(tf.keras.losses.Loss):
 
 supported_losses = {'RMSE': ['loss_type: Point', 'Usage: RMSE(sample_weights=False)'],
                     'Huber': ['loss_type: Point', 'Usage: Huber(delta=1.0, sample_weights=False)'],
+                    'SMAPE': ['loss_type: Point', 'Usage: SMAPE(epsilon=0.1, sample_weights=False)'],
                     'Quantile': ['loss_type: Quantile', 'Usage: QuantileLoss_v2(quantiles=[0.5], sample_weights=False)'], 
                     'Normal': ['loss_type: Normal', 'Usage: Normal_NLL_Loss(sample_weights=False)'], 
                     'Poisson': ['loss_type: Poisson', 'Usage: Poisson_NLL_Loss(sample_weights=False)'],

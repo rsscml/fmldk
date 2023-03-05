@@ -1050,7 +1050,7 @@ class SageTransformer_Model(tf.keras.Model):
             static_vars_list.append(scale_log)
         
         # Append additional columns
-        #stat_cols_ordered_list = stat_cols_ordered_list + ['scale']
+        stat_cols_ordered_list = stat_cols_ordered_list + ['scale']
         future_cols_ordered_list = future_cols_ordered_list + ['rel_age']
         
         # mask

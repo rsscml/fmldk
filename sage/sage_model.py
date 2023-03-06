@@ -1031,7 +1031,7 @@ class SageTransformer_Model(tf.keras.Model):
             decoder_vars_list.append(rel_age_dec)
             # scale
             scale = tf.strings.to_number(inputs[:, :-1, -3:-1], out_type=tf.dtypes.float32)
-            scale_log = tf.math.log(tf.math.sqrt(scale))
+            scale_log = tf.math.log(tf.math.sqrt(tf.abs(scale[:,:,0:1]))) # mean
             scale_log = self.scale_linear_transform_layer(scale_log[:,-1,:])
             # append
             static_vars_list.append(scale_log)

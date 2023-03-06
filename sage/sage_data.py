@@ -599,8 +599,7 @@ class sage_dataset:
 
         # scale target : target/target_mean -- new
         if self.scaling_method == 'mean_scaling':
-            target_nz_count = np.maximum(
-                np.count_nonzero(np.abs(target[:, :max_input_len, :]), axis=1).reshape(-1, 1, 1), 1.0)
+            target_nz_count = np.maximum(np.count_nonzero(np.abs(target[:, :max_input_len, :]), axis=1).reshape(-1, 1, 1), 1.0)
             target_sum = np.sum(np.abs(target[:, :max_input_len, :]), axis=1, keepdims=True)
             target_nz_mean = np.divide(target_sum, target_nz_count) + 1.0
             target_scaled = np.divide(target, target_nz_mean)
@@ -638,9 +637,7 @@ class sage_dataset:
             #known_num = np.divide(known_num, known_nz_mean)
             # scale -- new
             if self.scaling_method == 'mean_scaling':
-                known_nz_count = np.maximum(
-                    np.count_nonzero(np.abs(known_num), axis=1).reshape(-1, 1, len(self.temporal_known_num_indices)),
-                    1.0)
+                known_nz_count = np.maximum(np.count_nonzero(np.abs(known_num), axis=1).reshape(-1, 1, len(self.temporal_known_num_indices)),1.0)
                 known_sum = np.sum(np.abs(known_num), axis=1, keepdims=True)
                 known_nz_mean = np.divide(known_sum, known_nz_count) + 1.0
                 known_num = np.divide(known_num, known_nz_mean)
@@ -661,10 +658,7 @@ class sage_dataset:
             #unknown_num = np.divide(unknown_num, unknown_nz_mean)
             # scale -- new
             if self.scaling_method == 'mean_scaling':
-                unknown_nz_count = np.maximum(
-                    np.count_nonzero(np.abs(unknown_num[:, :max_input_len, :]), axis=1).reshape(-1, 1,
-                                                                                                len(self.temporal_unknown_num_indices)),
-                    1.0)
+                unknown_nz_count = np.maximum(np.count_nonzero(np.abs(unknown_num[:, :max_input_len, :]), axis=1).reshape(-1, 1, len(self.temporal_unknown_num_indices)),1.0)
                 unknown_sum = np.sum(np.abs(unknown_num[:, :max_input_len, :]), axis=1, keepdims=True)
                 unknown_nz_mean = np.divide(unknown_sum, unknown_nz_count) + 1.0
                 unknown_num = np.divide(unknown_num, unknown_nz_mean)
@@ -703,6 +697,7 @@ class sage_dataset:
             scale_in = np.concatenate((scale_mean, scale_std), axis=-1)
 
         model_in = np.concatenate((model_in, scale_in), axis=-1)
+
         if self.scaling_method == 'mean_scaling':
             scale_out = np.broadcast_to(target_nz_mean, model_out.shape)
         elif self.scaling_method == 'standard_scaling':
@@ -726,8 +721,7 @@ class sage_dataset:
         #weights = np.around(np.log10(np.squeeze(target_nz_mean) + 10),2) #/np.quantile(np.squeeze(target_nz_mean), q=0.8)
         # sample weights -- new
         if self.scaling_method == 'mean_scaling':
-            weights = np.around(np.log10(np.squeeze(target_nz_mean) + 10),
-                                2)  # /np.quantile(np.squeeze(target_nz_mean), q=0.8)
+            weights = np.around(np.log10(np.squeeze(target_nz_mean) + 10), 2)  # /np.quantile(np.squeeze(target_nz_mean), q=0.8)
         elif self.scaling_method == 'standard_scaling':
             weights = np.around(np.log10(np.squeeze(target_mean) + 10), 2)
 

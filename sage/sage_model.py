@@ -933,7 +933,7 @@ class SageTransformer_Model(tf.keras.Model):
         # Create Numerical Embedding (Linear Transform) Layers
         
         self.target_linear_transform_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=d_model, use_bias=False)) 
-        #self.scale_linear_transform_layer = tf.keras.layers.Dense(units=d_model, use_bias=False)
+        self.scale_linear_transform_layer = tf.keras.layers.Dense(units=d_model, use_bias=False)
         self.hist_encode_layer = CausalConvEncoder(d_model=d_model, num_layers=self.num_causal_layers) 
       
         if len(self.stat_num_col_names)>0:
@@ -1031,10 +1031,10 @@ class SageTransformer_Model(tf.keras.Model):
             decoder_vars_list.append(rel_age_dec)
             # scale
             scale = tf.strings.to_number(inputs[:, :-1, -3:-1], out_type=tf.dtypes.float32)
-            #scale_log = scale[:,:,0:1] #tf.math.log(tf.math.sqrt(tf.abs(scale[:,:,0:1]))) # mean
-            #scale_log = self.scale_linear_transform_layer(scale_log[:,-1,:])
+            scale_log = scale[:,:,0:1] #tf.math.log(tf.math.sqrt(tf.abs(scale[:,:,0:1]))) # mean
+            scale_log = self.scale_linear_transform_layer(scale_log[:,-1,:])
             # append
-            #static_vars_list.append(scale_log)
+            static_vars_list.append(scale_log)
         elif r_dim == 1:
             # print(" mean r_dim")
             # rel_age
@@ -1044,13 +1044,13 @@ class SageTransformer_Model(tf.keras.Model):
             decoder_vars_list.append(rel_age_dec)
             # scale
             scale = tf.strings.to_number(inputs[:, :-1, -2:-1], out_type=tf.dtypes.float32)
-            #scale_log = scale #tf.math.log(tf.math.sqrt(scale))
-            #scale_log = self.scale_linear_transform_layer(scale_log[:,-1,:])
+            scale_log = scale #tf.math.log(tf.math.sqrt(scale))
+            scale_log = self.scale_linear_transform_layer(scale_log[:,-1,:])
             # append
-            #static_vars_list.append(scale_log)
+            static_vars_list.append(scale_log)
         
         # Append additional columns
-        #stat_cols_ordered_list = stat_cols_ordered_list + ['scale']
+        stat_cols_ordered_list = stat_cols_ordered_list + ['scale']
         future_cols_ordered_list = future_cols_ordered_list + ['rel_age']
         
         # mask

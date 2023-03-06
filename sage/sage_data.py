@@ -605,7 +605,7 @@ class sage_dataset:
             target_scaled = np.divide(target, target_nz_mean)
         elif self.scaling_method == 'standard_scaling':
             target_mean = np.mean(target[:, :max_input_len, :], axis=1, keepdims=True)
-            target_stddev = np.std(target[:, :max_input_len, :], axis=1, keepdims=True)
+            target_stddev = np.maximum(np.std(target[:, :max_input_len, :], axis=1, keepdims=True), 0.001)
             target_scaled = np.divide(np.subtract(target, target_mean), target_stddev)
             target_scaled = np.nan_to_num(target_scaled)  # correct where stddev is 0
         
@@ -643,7 +643,7 @@ class sage_dataset:
                 known_num = np.divide(known_num, known_nz_mean)
             elif self.scaling_method == 'standard_scaling':
                 known_mean = np.mean(known_num, axis=1, keepdims=True)
-                known_stddev = np.std(known_num, axis=1, keepdims=True)
+                known_stddev = np.maximum(np.std(known_num, axis=1, keepdims=True), 0.001)
                 known_num = np.divide(np.subtract(known_num, known_mean), known_stddev)
                 known_num = np.nan_to_num(known_num)
             # merge
@@ -664,7 +664,7 @@ class sage_dataset:
                 unknown_num = np.divide(unknown_num, unknown_nz_mean)
             elif self.scaling_method == 'standard_scaling':
                 unknown_mean = np.mean(unknown_num[:, :max_input_len, :], axis=1, keepdims=True)
-                unknown_stddev = np.std(unknown_num[:, :max_input_len, :], axis=1, keepdims=True)
+                unknown_stddev = np.maximum(np.std(unknown_num[:, :max_input_len, :], axis=1, keepdims=True), 0.001)
                 unknown_num = np.divide(np.subtract(unknown_num, unknown_mean), unknown_stddev)
                 unknown_num = np.nan_to_num(unknown_num)
             # merge

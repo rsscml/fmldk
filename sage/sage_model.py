@@ -690,6 +690,39 @@ class CausalConvEncoder(tf.keras.layers.Layer):
         state = x #[:,-1:,:] # return last hidden state 
         return state
 
+
+class CausalConvResidualLayer(tf.keras.layers.Layer):
+    def __init__(self, d_model, seq_len, dropout_rate):
+        super(CausalConvResidualLayer, self).__init__()
+        self.seq_len = seq_len
+        num_causal_layers = int(min_power_of_2(self.seq_len))
+
+        self.conv1x1 = tf.keras.layers.Conv1D(filters=d_model, kernel_size=1)
+        self.causalconvlayer1 = CausalConvEncoder(d_model=d_model, num_layers=num_causal_layers)
+
+        self.conv_dropout1 = tf.keras.layers.Dropout(dropout_rate)
+
+        self.conv_layernorm1 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
+
+        self.conv_activation1 = tf.keras.layers.Activation('selu')
+
+        self.conv_add = tf.keras.layers.Add()
+
+    def call(self, inputs, training):
+        x = inputs
+
+        y = self.conv1x1(x)
+
+        x = self.causalconvlayer1(x)
+        x = self.conv_layernorm1(x)
+        x = self.conv_activation1(x)
+        x = self.conv_dropout1(x)
+
+        out = self.conv_add([x, y])
+
+        return out
+
+
 # Variable Weighted Transformer Model
 
 class SageTransformer(tf.keras.Model):
@@ -939,9 +972,10 @@ class SageTransformer_Model(tf.keras.Model):
         # Create Numerical Embedding (Linear Transform) Layers
         
         self.target_linear_transform_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=d_model, use_bias=False)) 
-        self.scale_linear_transform_layer = tf.keras.layers.Dense(units=d_model, use_bias=False)
-        self.hist_encode_layer = CausalConvEncoder(d_model=d_model, num_layers=self.num_causal_layers) 
-      
+        #self.scale_linear_transform_layer = tf.keras.layers.Dense(units=d_model, use_bias=False)
+        self.hist_encode_layer = CausalConvEncoder(d_model=d_model, num_layers=self.num_causal_layers)
+        #self.hist_encode_layer = CausalConvResidualLayer(d_model=d_model, seq_len=int(self.hist_len+self.f_len), dropout_rate=dropout_rate)
+
         if len(self.stat_num_col_names)>0:
             self.stat_linear_transform_layers = {}
             for colname in self.stat_num_col_names:
@@ -1054,14 +1088,14 @@ class SageTransformer_Model(tf.keras.Model):
             decoder_vars_list.append(rel_age_dec)
 
             # scale
-            scale = tf.strings.to_number(inputs[:,:-1, -2:-1], out_type=tf.dtypes.float32)
+            scale = tf.strings.to_number(inputs[:, :-1, -2:-1], out_type=tf.dtypes.float32)
             #scale_log = scale #tf.math.log(tf.math.sqrt(scale))
             #scale_log = self.scale_linear_transform_layer(scale_log[:,-1,:])
             # append
             #static_vars_list.append(scale_log)
         
         # Append additional columns
-        stat_cols_ordered_list = stat_cols_ordered_list + ['scale']
+        #stat_cols_ordered_list = stat_cols_ordered_list + ['scale']
         future_cols_ordered_list = future_cols_ordered_list + ['rel_age']
         
         # mask

@@ -1,4 +1,6 @@
-# Databricks notebook source
+#!/usr/bin/env python
+# coding: utf-8
+
 import tensorflow as tf
 import tensorflow_probability as tfp
 tfd = tfp.distributions
@@ -15,6 +17,7 @@ import re
 import gc
 import math as m
 import time
+
 # visualization imports
 from bokeh.plotting import figure, output_file, show, output_notebook, save
 from bokeh.models import ColumnDataSource, HoverTool, Div, FactorRange
@@ -23,9 +26,6 @@ from bokeh.palettes import Category10, Category20, Colorblind
 from bokeh.io import reset_output
 from bokeh.models.ranges import DataRange1d
 
-# COMMAND ----------
-
-
 class tft_dataset:
     def __init__(self, 
                  col_dict, 
@@ -33,10 +33,9 @@ class tft_dataset:
                  fh, 
                  batch, 
                  min_nz,
-                 scaling_method='mean_scaling',
                  interleave=1, 
-                 PARALLEL_DATA_JOBS=4,
-                 PARALLEL_DATA_JOBS_BATCHSIZE=128,
+                 PARALLEL_DATA_JOBS=1, 
+                 PARALLEL_DATA_JOBS_BATCHSIZE=64, 
                  WORKDIR='/tmp/'):
         """
         col_dict: dictionary of various column groups {id_col:'',
@@ -63,7 +62,6 @@ class tft_dataset:
         self.fh = fh
         self.batch = batch
         self.min_nz = min_nz
-        self.scaling_method = scaling_method
         self.interleave = interleave
         self.PARALLEL_DATA_JOBS = PARALLEL_DATA_JOBS
         self.PARALLEL_DATA_JOBS_BATCHSIZE = PARALLEL_DATA_JOBS_BATCHSIZE
@@ -88,10 +86,7 @@ class tft_dataset:
             raise ValueError("Id Column, Target Column or Index Column not specified!")
 
         # full columnset for train/test/infer
-        self.col_list = [self.id_col] + [self.target_col] + \
-                        self.static_num_col_list + self.static_cat_col_list + \
-                        self.temporal_known_num_col_list + self.temporal_unknown_num_col_list + \
-                        self.temporal_known_cat_col_list + self.temporal_unknown_cat_col_list
+        self.col_list = [self.id_col] + [self.target_col] +                         self.static_num_col_list + self.static_cat_col_list +                         self.temporal_known_num_col_list + self.temporal_unknown_num_col_list +                         self.temporal_known_cat_col_list + self.temporal_unknown_cat_col_list
 
         self.cat_col_list = self.static_cat_col_list + self.temporal_known_cat_col_list + self.temporal_unknown_cat_col_list
 
@@ -394,13 +389,11 @@ class tft_dataset:
         """
         keys_dict, wts_dict = self.get_keys(data)
         self.train_test_batch_size = int(self.batch*len(keys_dict))
-        # accomodate larger batch sizes than no. of keys
-        cycles = int(m.ceil(self.batch/len(keys_dict)))
         while True:
             sample_id = self.select_ids(keys_dict, wts_dict)
             df = data.query("{}==@sample_id".format(self.id_col))
             arr, pad_arr = self.select_arrs(df)
-                
+            
             # -- done for @tf.function retracing reason. May revisit later
             #valid_indices = np.where(np.count_nonzero(arr[:,:self.window_len-self.fh,self.target_index].astype(np.float32)>0,axis=1)>=self.min_nz)
             #arr = arr[valid_indices]
@@ -419,10 +412,6 @@ class tft_dataset:
             max_keys = data.groupby(self.strata_col_list)[self.id_col].nunique().max()
         else:
             max_keys = data[self.id_col].nunique()
-            
-        # calculate interleave value required to meet max_samples requirement
-        #max_samples_count = data.groupby(self.id_col)[self.target_col].apply(lambda x: max(0,x.count()-self.window_len)).sum()
-        #self.interleave = m.ceil(max_samples_count/self.max_samples_required)
             
         # create arrays 
         model_in = []
@@ -457,12 +446,12 @@ class tft_dataset:
         model_in = np.vstack(model_in)
         model_out = np.vstack(model_out)
         scale = np.vstack(scale)
-        weights = np.vstack(weights)   
-        
+        weights = np.vstack(weights)
+
         # shuffle
         p = np.random.permutation(len(model_in))
         model_in, model_out, scale, weights = model_in[p], model_out[p], scale[p], weights[p]
-        
+
         return model_in.astype(str), model_out.astype(np.float32), scale.astype(np.float32), weights.astype(np.float32)
         
             
@@ -591,38 +580,23 @@ class tft_dataset:
         SL = np.minimum(np.quantile(target[:,:max_input_len,:], q=0.01, axis=1, keepdims=True), 0)
         target = np.clip(target, a_min=SL, a_max=SU)
         
-        # scale target : target/target_mean -- old
-        #target_nz_count = np.maximum(np.count_nonzero(np.abs(target[:,:max_input_len,:]), axis=1).reshape(-1,1,1), 1.0)
-        #target_sum = np.sum(np.abs(target[:,:max_input_len,:]), axis=1, keepdims=True)
-        #target_nz_mean = np.divide(target_sum, target_nz_count) + 1.0
-        #target_scaled = np.divide(target, target_nz_mean)
-
-        # scale target : target/target_mean -- new
-        if self.scaling_method == 'mean_scaling':
-            target_nz_count = np.maximum(np.count_nonzero(np.abs(target[:, :max_input_len, :]), axis=1).reshape(-1, 1, 1), 1.0)
-            target_sum = np.sum(np.abs(target[:, :max_input_len, :]), axis=1, keepdims=True)
-            target_nz_mean = np.divide(target_sum, target_nz_count) + 1.0
-            target_scaled = np.divide(target, target_nz_mean)
-        elif self.scaling_method == 'standard_scaling':
-            target_mean = np.mean(target[:, :max_input_len, :], axis=1, keepdims=True)
-            target_stddev = np.maximum(np.std(target[:, :max_input_len, :], axis=1, keepdims=True), 0.001)
-            target_scaled = np.divide(np.subtract(target, target_mean), target_stddev)
-            target_scaled = np.nan_to_num(target_scaled)  # correct where stddev is 0
-        elif self.scaling_method == 'no_scaling':
-            target_nz_mean = 1.0
-            target_scaled = np.divide(target, target_nz_mean)
-
+        # scale target : target/target_mean
+        target_nz_count = np.maximum(np.count_nonzero(np.abs(target[:,:max_input_len,:]), axis=1).reshape(-1,1,1), 1.0)
+        target_sum = np.sum(np.abs(target[:,:max_input_len,:]), axis=1, keepdims=True)
+        target_nz_mean = np.divide(target_sum, target_nz_count) + 1.0
+        target_scaled = np.divide(target, target_nz_mean)
+        
         # build model_in array  
         model_in = np.concatenate((sid, target_scaled), axis=-1)
         model_out = target_scaled[:,-self.fh:,:]
-
+        
         if len(self.static_num_indices) > 0:
             static_num = sample_arr[..., self.static_num_indices].astype(float)
             # scale
-            #static_nz_count = np.maximum(np.count_nonzero(np.abs(static_num), axis=1).reshape(-1,1,len(self.static_num_indices)), 1.0)
-            #static_sum = np.sum(np.abs(static_num), axis=1, keepdims=True)
-            #static_nz_mean = np.divide(static_sum, static_nz_count) + 1.0
-            #static_num = np.divide(static_num, static_nz_mean)
+            static_nz_count = np.maximum(np.count_nonzero(np.abs(static_num), axis=1).reshape(-1,1,len(self.static_num_indices)), 1.0)
+            static_sum = np.sum(np.abs(static_num), axis=1, keepdims=True)
+            static_nz_mean = np.divide(static_sum, static_nz_count) + 1.0
+            static_num = np.divide(static_num, static_nz_mean)
             # merge
             model_in = np.concatenate((model_in, static_num), axis=-1)
             
@@ -633,53 +607,21 @@ class tft_dataset:
 
         if len(self.temporal_known_num_indices) > 0:
             known_num = sample_arr[..., self.temporal_known_num_indices].astype(float)
-            # scale -- old
-            #known_nz_count = np.maximum(np.count_nonzero(np.abs(known_num), axis=1).reshape(-1,1,len(self.temporal_known_num_indices)), 1.0)
-            #known_sum = np.sum(np.abs(known_num), axis=1, keepdims=True)
-            #known_nz_mean = np.divide(known_sum, known_nz_count) + 1.0
-            #known_num = np.divide(known_num, known_nz_mean)
-            # scale -- new
-            if self.scaling_method == 'mean_scaling':
-                known_nz_count = np.maximum(np.count_nonzero(np.abs(known_num), axis=1).reshape(-1, 1, len(self.temporal_known_num_indices)),1.0)
-                known_sum = np.sum(np.abs(known_num), axis=1, keepdims=True)
-                known_nz_mean = np.divide(known_sum, known_nz_count) + 1.0
-                known_num = np.divide(known_num, known_nz_mean)
-            elif self.scaling_method == 'standard_scaling':
-                known_mean = np.mean(known_num, axis=1, keepdims=True)
-                known_stddev = np.maximum(np.std(known_num, axis=1, keepdims=True), 0.001)
-                known_num = np.divide(np.subtract(known_num, known_mean), known_stddev)
-                known_num = np.nan_to_num(known_num)
-            elif self.scaling_method == 'no_scaling':
-                known_nz_count = np.maximum(np.count_nonzero(np.abs(known_num), axis=1).reshape(-1, 1, len(self.temporal_known_num_indices)),1.0)
-                known_sum = np.sum(np.abs(known_num), axis=1, keepdims=True)
-                known_nz_mean = np.divide(known_sum, known_nz_count) + 1.0
-                known_num = np.divide(known_num, known_nz_mean)
+            # scale
+            known_nz_count = np.maximum(np.count_nonzero(np.abs(known_num), axis=1).reshape(-1,1,len(self.temporal_known_num_indices)), 1.0)
+            known_sum = np.sum(np.abs(known_num), axis=1, keepdims=True)
+            known_nz_mean = np.divide(known_sum, known_nz_count) + 1.0
+            known_num = np.divide(known_num, known_nz_mean)
             # merge
             model_in = np.concatenate((model_in, known_num), axis=-1)
 
         if len(self.temporal_unknown_num_indices) > 0:
             unknown_num = sample_arr[..., self.temporal_unknown_num_indices].astype(float)
-            # scale -- old
-            #unknown_nz_count = np.maximum(np.count_nonzero(np.abs(unknown_num[:,:max_input_len,:]), axis=1).reshape(-1,1,len(self.temporal_unknown_num_indices)), 1.0)
-            #unknown_sum = np.sum(np.abs(unknown_num[:,:max_input_len,:]), axis=1, keepdims=True)
-            #unknown_nz_mean = np.divide(unknown_sum, unknown_nz_count) + 1.0
-            #unknown_num = np.divide(unknown_num, unknown_nz_mean)
-            # scale -- new
-            if self.scaling_method == 'mean_scaling':
-                unknown_nz_count = np.maximum(np.count_nonzero(np.abs(unknown_num[:, :max_input_len, :]), axis=1).reshape(-1, 1, len(self.temporal_unknown_num_indices)),1.0)
-                unknown_sum = np.sum(np.abs(unknown_num[:, :max_input_len, :]), axis=1, keepdims=True)
-                unknown_nz_mean = np.divide(unknown_sum, unknown_nz_count) + 1.0
-                unknown_num = np.divide(unknown_num, unknown_nz_mean)
-            elif self.scaling_method == 'standard_scaling':
-                unknown_mean = np.mean(unknown_num[:, :max_input_len, :], axis=1, keepdims=True)
-                unknown_stddev = np.maximum(np.std(unknown_num[:, :max_input_len, :], axis=1, keepdims=True), 0.001)
-                unknown_num = np.divide(np.subtract(unknown_num, unknown_mean), unknown_stddev)
-                unknown_num = np.nan_to_num(unknown_num)
-            elif self.scaling_method == 'no_scaling':
-                unknown_nz_count = np.maximum(np.count_nonzero(np.abs(unknown_num[:, :max_input_len, :]), axis=1).reshape(-1, 1, len(self.temporal_unknown_num_indices)),1.0)
-                unknown_sum = np.sum(np.abs(unknown_num[:, :max_input_len, :]), axis=1, keepdims=True)
-                unknown_nz_mean = np.divide(unknown_sum, unknown_nz_count) + 1.0
-                unknown_num = np.divide(unknown_num, unknown_nz_mean)
+            # scale
+            unknown_nz_count = np.maximum(np.count_nonzero(np.abs(unknown_num[:,:max_input_len,:]), axis=1).reshape(-1,1,len(self.temporal_unknown_num_indices)), 1.0)
+            unknown_sum = np.sum(np.abs(unknown_num[:,:max_input_len,:]), axis=1, keepdims=True)
+            unknown_nz_mean = np.divide(unknown_sum, unknown_nz_count) + 1.0
+            unknown_num = np.divide(unknown_num, unknown_nz_mean)
             # merge
             model_in = np.concatenate((model_in, unknown_num), axis=-1)
    
@@ -696,32 +638,11 @@ class tft_dataset:
         rel_age = np.broadcast_to((np.arange(0,sequence_len,1)/sequence_len).reshape(-1,1), target.shape)
         model_in = np.concatenate((model_in, rel_age), axis=-1) 
         
-        # scale -- old
-        #scale_in = np.broadcast_to(target_nz_mean, target.shape)
-        #model_in = np.concatenate((model_in, scale_in), axis=-1)
-        #scale_out = np.broadcast_to(target_nz_mean, model_out.shape)
-
-        # scale -- new
-        if self.scaling_method == 'mean_scaling':
-            scale_in = np.broadcast_to(target_nz_mean, target.shape)
-        elif self.scaling_method == 'standard_scaling':
-            scale_mean = np.broadcast_to(target_mean, target.shape)
-            scale_std = np.broadcast_to(target_stddev, target.shape)
-            scale_in = np.concatenate((scale_mean, scale_std), axis=-1)
-        elif self.scaling_method == 'no_scaling':
-            scale_in = np.broadcast_to(target_nz_mean, target.shape)
-
+        # scale
+        scale_in = np.broadcast_to(target_nz_mean, target.shape)
         model_in = np.concatenate((model_in, scale_in), axis=-1)
-
-        if self.scaling_method == 'mean_scaling':
-            scale_out = np.broadcast_to(target_nz_mean, model_out.shape)
-        elif self.scaling_method == 'standard_scaling':
-            scale_mean_out = np.broadcast_to(target_mean, model_out.shape)
-            scale_std_out = np.broadcast_to(target_stddev, model_out.shape)
-            scale_out = np.concatenate((scale_mean_out, scale_std_out), axis=-1)
-        elif self.scaling_method == 'no_scaling':
-            scale_out = np.broadcast_to(target_nz_mean, model_out.shape)
-
+        scale_out = np.broadcast_to(target_nz_mean, model_out.shape)
+            
         mask_list = []
         for pad_len in pad_arr:
             if pad_len > 0:
@@ -734,17 +655,9 @@ class tft_dataset:
         mask = np.vstack(mask_list).reshape(-1,sequence_len,1)
         model_in = np.concatenate((model_in, mask), axis=-1)
 
-        # sample weights -- old
-        #weights = np.around(np.log10(np.squeeze(target_nz_mean) + 10),2) #/np.quantile(np.squeeze(target_nz_mean), q=0.8)
-        # sample weights -- new
-        if self.scaling_method == 'mean_scaling':
-            weights = np.around(np.log10(np.squeeze(target_nz_mean) + 10), 2)  # /np.quantile(np.squeeze(target_nz_mean), q=0.8)
-        elif self.scaling_method == 'standard_scaling':
-            weights = np.around(np.log10(np.squeeze(target_mean) + 10), 2)
-        elif self.scaling_method == 'no_scaling':
-            weights = np.around(np.log10(np.squeeze(target_nz_mean) + 10), 2)
-
-        weights = np.clip(weights, a_min=1.0, a_max=5.0)
+        # sample weights
+        weights = np.around(np.log10(np.squeeze(target_nz_mean) + 10),2) #/ np.quantile(np.squeeze(target_nz_mean), q=0.8)
+        weights = np.clip(weights, a_min=1.0, a_max=2.0)
         weights = weights.reshape(-1,1)
         #weights = np.expand_dims(weights.reshape(-1,1), axis=-1)
         #weights = np.tile(weights, [1,sequence_len,1])
@@ -758,10 +671,10 @@ class tft_dataset:
             test_data = data[data[self.time_index_col]<=self.test_till].groupby(self.id_col).apply(lambda x: x[-delta:]).reset_index(drop=True)
         else:
             # check if test_till - train_till > window_len
-            test_len = int(data[(data[self.time_index_col]>self.train_till) & (data[self.time_index_col]<=self.test_till)].groupby(self.id_col)[self.target_col].count().max())
+            test_len = int(data[(data[self.time_index_col] > self.train_till) & (data[self.time_index_col] <= self.test_till)].groupby(self.id_col)[self.target_col].count().max())
             test_len = test_len + (self.window_len - self.fh)
-            test_data = data[data[self.time_index_col]<=self.test_till].groupby(self.id_col).apply(lambda x: x[-test_len:]).reset_index(drop=True)
-            #test_data = data[data[self.time_index_col]<=self.test_till].groupby(self.id_col).apply(lambda x: x[-self.window_len:]).reset_index(drop=True) #original
+            test_data = data[data[self.time_index_col] <= self.test_till].groupby(self.id_col).apply(lambda x: x[-test_len:]).reset_index(drop=True)
+            #test_data = data[data[self.time_index_col]<=self.test_till].groupby(self.id_col).apply(lambda x: x[-self.window_len:]).reset_index(drop=True)
         return train_data, test_data
     
     def train_test_dataset(self, data, train_till, test_till, low_memory=True, use_memmap=True, fill_buffer=False):
@@ -803,23 +716,20 @@ class tft_dataset:
         check_gen = self.data_generator(train_data)
         x, y, s, w = next(check_gen)
         num_features = x.shape[-1]
-        scale_dims = s.shape[-1]
         
         if low_memory and (not fill_buffer):
-            print("low_memory: {} and fill_buffer: {}. Use generator".format(low_memory, fill_buffer))
             trainset = tf.data.Dataset.from_generator(lambda: self.data_generator(train_data),
                                                       output_signature=(tf.TensorSpec(shape=(None, self.window_len, num_features), dtype=tf.string),
                                                                         tf.TensorSpec(shape=(None, self.fh, 1), dtype=tf.float32),
-                                                                        tf.TensorSpec(shape=(None, self.fh, scale_dims), dtype=tf.float32),
+                                                                        tf.TensorSpec(shape=(None, self.fh, 1), dtype=tf.float32),
                                                                         tf.TensorSpec(shape=(None, 1), dtype=tf.float32)))
         
             testset = tf.data.Dataset.from_generator(lambda: self.data_generator(test_data),
                                                      output_signature=(tf.TensorSpec(shape=(None, self.window_len, num_features), dtype=tf.string),
                                                                        tf.TensorSpec(shape=(None, self.fh, 1), dtype=tf.float32),
-                                                                       tf.TensorSpec(shape=(None, self.fh, scale_dims), dtype=tf.float32),
+                                                                       tf.TensorSpec(shape=(None, self.fh, 1), dtype=tf.float32),
                                                                        tf.TensorSpec(shape=(None, 1), dtype=tf.float32)))
         elif (not low_memory) and use_memmap:
-            print("low_memory: {} and use_memmap: {}. Use memmap".format(low_memory, use_memmap))
             SHUFFLE_BUFFER_SIZE = int(m.ceil(train_data[self.id_col].nunique()*0.01)*self.batch)
             BATCH_SIZE = self.batch
             
@@ -859,21 +769,19 @@ class tft_dataset:
                 testset = tf.data.Dataset.sample_from_datasets(test_datasets).batch(BATCH_SIZE, drop_remainder=False) #num_parallel_calls=self.PARALLEL_DATA_JOBS)
         
         elif (not low_memory) and (not use_memmap):
-            print("low_memory: {} and use_memmap: {}. Use static_dataset".format(low_memory, use_memmap))
             SHUFFLE_BUFFER_SIZE = int(m.ceil(train_data[self.id_col].nunique()*0.1)*self.batch)
             
             model_in_x, model_out_x, scale_x, weights_x = self.static_dataset(train_data, batchsize=self.batch*max(m.ceil(train_data[self.id_col].nunique()*0.01), 200), use_memmap=use_memmap, prefix='train')
             model_in_y, model_out_y, scale_y, weights_y = self.static_dataset(test_data, batchsize=self.batch*max(m.ceil(test_data[self.id_col].nunique()*0.01), 200), use_memmap=use_memmap, prefix='test')
             
             if tf.__version__ < "2.7.0":
-                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).shuffle(SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=True).batch(self.batch, drop_remainder=True)
-                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).batch(self.batch, drop_remainder=False)
+                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).batch(self.batch, drop_remainder=True)
+                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).batch(self.batch, drop_remainder=True)
             else:
-                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).shuffle(SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=True).batch(self.batch, drop_remainder=True, num_parallel_calls=self.PARALLEL_DATA_JOBS)
-                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).batch(self.batch, drop_remainder=False, num_parallel_calls=self.PARALLEL_DATA_JOBS)
+                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).batch(self.batch, drop_remainder=True, num_parallel_calls=self.PARALLEL_DATA_JOBS)
+                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).batch(self.batch, drop_remainder=True, num_parallel_calls=self.PARALLEL_DATA_JOBS)
         
         elif fill_buffer:
-            print("low_memory: {}, fill_buffer: {}. Fill buffer".format(low_memory, fill_buffer))
             #avg_train_samples = max(1, int((train_data.groupby(self.id_col).size().mean() - self.window_len)/self.interleave))
             #num_train_observations = avg_train_samples*train_data[self.id_col].nunique()
             
@@ -882,23 +790,22 @@ class tft_dataset:
             
             model_in_x, model_out_x, scale_x, _ = self.fill_buffer(train_data) # , num_observations=num_train_observations)
             model_in_y, model_out_y, scale_y, _ = self.fill_buffer(test_data) # , num_observations=num_test_observations)
-            
+
             # weights over entire dataset based on scale
-            weights_x = np.around(np.log10(np.squeeze(scale_x[:,-1:,:])+10),2)
-            weights_x = weights_x.reshape(-1,1)
-            
-            weights_y = np.around(np.log10(np.squeeze(scale_y[:,-1:,:])+10),2)
-            weights_y = weights_y.reshape(-1,1)
-            
+            weights_x = np.around(np.log10(np.squeeze(scale_x[:, -1:, :]) + 10),2)
+            weights_x = weights_x.reshape(-1, 1)
+            weights_y = np.around(np.log10(np.squeeze(scale_y[:, -1:, :]) + 10),2)
+            weights_y = weights_y.reshape(-1, 1)
+
             TRAIN_SHUFFLE_BUFFER_SIZE = model_in_x.shape[0] # num_train_observations
             TEST_SHUFFLE_BUFFER_SIZE = model_in_y.shape[0] # num_test_observations
             
             if tf.__version__ < "2.7.0":
-                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).shuffle(TRAIN_SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=False).batch(self.train_test_batch_size, drop_remainder=True)
-                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).shuffle(TEST_SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=False).batch(self.train_test_batch_size, drop_remainder=True)
+                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).batch(self.train_test_batch_size, drop_remainder=True)
+                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).batch(self.train_test_batch_size, drop_remainder=True)
             else:
-                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).shuffle(TRAIN_SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=False).batch(self.train_test_batch_size, drop_remainder=True, num_parallel_calls=self.PARALLEL_DATA_JOBS)
-                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).shuffle(TEST_SHUFFLE_BUFFER_SIZE, reshuffle_each_iteration=False).batch(self.train_test_batch_size, drop_remainder=True, num_parallel_calls=self.PARALLEL_DATA_JOBS)
+                trainset = tf.data.Dataset.from_tensor_slices((model_in_x, model_out_x, scale_x, weights_x)).batch(self.train_test_batch_size, drop_remainder=True, num_parallel_calls=self.PARALLEL_DATA_JOBS)
+                testset = tf.data.Dataset.from_tensor_slices((model_in_y, model_out_y, scale_y, weights_y)).batch(self.train_test_batch_size, drop_remainder=True, num_parallel_calls=self.PARALLEL_DATA_JOBS)
          
         return trainset, testset
         
@@ -925,15 +832,8 @@ class tft_dataset:
         model_in, model_out, scale, _ = self.preprocess(arr, pad_arr)
         input_tensor = tf.convert_to_tensor(model_in.astype(str), dtype=tf.string)
         
-        # for evaluation -- old
-        #actuals_arr = model_out*scale
-        # for evaluation -- new
-        if self.scaling_method == 'mean_scaling':
-            actuals_arr = model_out * scale
-        elif self.scaling_method == 'standard_scaling':
-            actuals_arr = model_out * scale[:, :, 1:2] + scale[:, :, 0:1]
-        elif self.scaling_method == 'no_scaling':
-            actuals_arr = model_out * scale
+        # for evaluation
+        actuals_arr = model_out*scale
         
         if len(self.static_cat_col_list)>0:
             stat_arr_list = []
@@ -1191,6 +1091,6 @@ class tft_dataset:
         supergrid = gridplot(layouts, ncols=1)
         show(supergrid)
 
-# COMMAND ----------
+
 
 

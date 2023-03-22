@@ -14,7 +14,6 @@ import pickle
 import absl.logging
 absl.logging.set_verbosity(absl.logging.ERROR)
 import pandas as pd
-import gc
 
 # Distribution Sampling functions
 
@@ -667,21 +666,6 @@ class TFT(tf.keras.Model):
         if self.context:
             stat_vars_list, encoder_vars_list, decoder_vars_list, padding_mask, scale = inputs
 
-            # scale
-            scale = scale[:, -1:, :]
-            s_dim = scale.shape.as_list()[-1]
-
-            if s_dim == 2:
-                # print("standard scaling used")
-                scaler = 'standard_scaler'
-                scale_mean = scale[:, :, 0:1]
-                scale_std = scale[:, :, 1:2]
-            else:
-                # print("mean scaling used")
-                scaler = 'mean_scaler'
-                scale_mean = scale[:, :, 0:1]
-                scale_std = scale[:, :, 0:1]
-
             static_vec, stat_weights = self.static_var_select_layer(stat_vars_list, training=training)
             context_vec, enrichment_vec, init_h, init_c = self.static_context_layer(static_vec, training=training)
             init_states = [init_h, init_c]
@@ -690,22 +674,6 @@ class TFT(tf.keras.Model):
             decoder_inputs, future_weights = self.temporal_var_select_decoder_layer([decoder_vars_list, context_vec], training=training)
         else:
             encoder_vars_list, decoder_vars_list, padding_mask, scale = inputs
-
-            # scale
-            scale = scale[:, -1:, :]
-            s_dim = scale.shape.as_list()[-1]
-
-            if s_dim == 2:
-                # print("standard scaling used")
-                scaler = 'standard_scaler'
-                scale_mean = scale[:, :, 0:1]
-                scale_std = scale[:, :, 1:2]
-            else:
-                # print("mean scaling used")
-                scaler = 'mean_scaler'
-                scale_mean = scale[:, :, 0:1]
-                scale_std = scale[:, :, 0:1]
-
             batch_size = tf.shape(encoder_vars_list[0])[0]
             init_h = tf.zeros([batch_size, self.hidden_layer_size], dtype=tf.float32)
             init_c = tf.zeros([batch_size, self.hidden_layer_size], dtype=tf.float32)
@@ -713,7 +681,6 @@ class TFT(tf.keras.Model):
 
             encoder_inputs, past_weights = self.temporal_var_select_encoder_layer(encoder_vars_list, training=training)
             decoder_inputs, future_weights = self.temporal_var_select_decoder_layer(decoder_vars_list, training=training)
-
 
         # recurrent layer
         temporal_features = self.recurrent_layer([encoder_inputs, decoder_inputs, init_states], training=training)
@@ -741,33 +708,17 @@ class TFT(tf.keras.Model):
         elif self.loss_fn == 'Binary':
             out = self.final_layer(attn_out, training=training)
         elif self.loss_fn == 'Poisson':
-            if scaler == 'mean_scaler':
-                mean = self.final_layer(attn_out, training=training) * scale
-            elif scaler == 'standard_scaler':
-                mean = self.final_layer(attn_out, training=training) * scale_std + scale_mean
-            #mean = self.final_layer(attn_out, training=training)*scale
+            mean = self.final_layer(attn_out, training=training)*scale
             parameters = mean
             out = poisson_sample(mu=mean)
         elif self.loss_fn == 'Normal':
-            if scaler == 'mean_scaler':
-                mean = self.m_layer(attn_out, training=training) * scale  # (batch, f_len, 1)
-                stddev = self.s_layer(attn_out, training=training) * scale  # (batch, f_len, 1)
-            elif scaler == 'standard_scaler':
-                mean = self.m_layer(attn_out, training=training) * scale_std + scale_mean  # (batch, f_len, 1)
-                stddev = self.s_layer(attn_out, training=training) * scale_std  # (batch, f_len, 1)
-            #mean = self.m_layer(attn_out, training=training)*scale
-            #stddev = self.s_layer(attn_out, training=training)*scale
+            mean = self.m_layer(attn_out, training=training)*scale
+            stddev = self.s_layer(attn_out, training=training)*scale
             parameters = tf.concat([mean, stddev], axis=-1)
             out = normal_sample(mean, stddev)
         elif self.loss_fn == 'Negbin':
-            if scaler == 'mean_scaler':
-                mean = self.m_layer(attn_out, training=training) * scale  # (batch, f_len, 1)
-                alpha = self.a_layer(attn_out, training=training) * tf.sqrt(scale)  # (batch, f_len, 1)
-            elif scaler == 'standard_scaler':
-                mean = self.m_layer(attn_out, training=training) * scale_std + scale_mean  # (batch, f_len, 1)
-                alpha = self.a_layer(attn_out, training=training) * tf.sqrt(scale_std)  # (batch, f_len, 1)
-            #mean = self.m_layer(attn_out, training=training)*scale
-            #alpha = self.a_layer(attn_out, training=training)*tf.sqrt(scale)
+            mean = self.m_layer(attn_out, training=training)*scale
+            alpha = self.a_layer(attn_out, training=training)*tf.sqrt(scale)
             parameters = tf.concat([mean, alpha], axis=-1)
             out = negbin_sample(mean, alpha)
         elif self.loss_fn == 'Quantile':
@@ -902,7 +853,7 @@ class TFT_Model(tf.keras.Model):
         # Create Numerical Embedding (Linear Transform) Layers
         
         self.target_linear_transform_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=d_model, use_bias=False)) 
-        #self.scale_linear_transform_layer = tf.keras.layers.Dense(units=d_model, use_bias=False)
+        self.scale_linear_transform_layer = tf.keras.layers.Dense(units=d_model, use_bias=False)
         
         if len(self.stat_num_col_names)>0:
             self.stat_linear_transform_layers = {}
@@ -916,19 +867,14 @@ class TFT_Model(tf.keras.Model):
         
         if len(self.unknown_num_col_names)>=0:
             self.unknown_linear_transform_layers = {}
-            for colname in self.unknown_num_col_names:
+            for colname in self.unknown_num_col_names + ['rel_age']:
                 self.unknown_linear_transform_layers[colname] = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=d_model, use_bias=False))
                 
     def call(self, inputs, training):
-
-        # total_dim
-        t_dim = inputs.shape.as_list()[-1] - 3  # reduce 2 dims for mask,rel_age,scale
-        dim_counter = 0
         
         # target
         target = tf.strings.to_number(inputs[:,:,self.target_index:self.target_index+1], out_type=tf.dtypes.float32)
         target = self.target_linear_transform_layer(target)
-        dim_counter += 1
         
         # ordered col names list
         stat_cols_ordered_list = []
@@ -957,7 +903,6 @@ class TFT_Model(tf.keras.Model):
                 stat_var = self.stat_linear_transform_layers[col](stat_var)
                 # append
                 static_vars_list.append(stat_var)
-                dim_counter += 1
         
         # static embeddings
         if len(self.stat_cat_indices)>0:
@@ -968,7 +913,6 @@ class TFT_Model(tf.keras.Model):
                 stat_var_embeddings = self.stat_embed_layers.get(col)(stat_var_id)
                 # append
                 static_vars_list.append(stat_var_embeddings[:,-1,:])
-                dim_counter += 1
                 
         # known numeric 
         if len(self.known_num_indices)>0:
@@ -980,7 +924,6 @@ class TFT_Model(tf.keras.Model):
                 # append
                 encoder_vars_list.append(num_vars[:,:self.hist_len,:])
                 decoder_vars_list.append(num_vars[:,-self.f_len:,:])
-                dim_counter += 1
         
         # unknown numeric
         if len(self.unknown_num_indices)>0:
@@ -990,7 +933,6 @@ class TFT_Model(tf.keras.Model):
                 num_vars = self.unknown_linear_transform_layers[col](num_vars)
                 # append
                 encoder_vars_list.append(num_vars[:,:self.hist_len,:])
-                dim_counter += 1
                      
         # known embeddings
         if len(self.known_cat_indices)>0:
@@ -1003,7 +945,6 @@ class TFT_Model(tf.keras.Model):
                 # append
                 encoder_vars_list.append(cat_var_embeddings[:,:self.hist_len,:])
                 decoder_vars_list.append(cat_var_embeddings[:,-self.f_len:,:])
-                dim_counter += 1
         
         # unknown embeddings
         if len(self.unknown_cat_indices)>0:
@@ -1014,17 +955,7 @@ class TFT_Model(tf.keras.Model):
                 cat_var_embeddings = self.temporal_unknown_embed_layers.get(col)(cat_var_id)
                 # append
                 encoder_vars_list.append(cat_var_embeddings[:,:self.hist_len,:])
-                dim_counter += 1
-
-        # remaining_dim
-        r_dim = t_dim - dim_counter
-
-        # default scale
-        scale = tf.strings.to_number(inputs[:, :, -2:-1], out_type=tf.dtypes.float32)
-
-        '''   
-        # original
-                       
+                          
         # rel_age
         rel_age = tf.strings.to_number(inputs[:,:,-3:-2], out_type=tf.dtypes.float32)
         rel_age_enc = self.known_linear_transform_layers['rel_age'](rel_age[:,:self.hist_len,:])
@@ -1039,37 +970,14 @@ class TFT_Model(tf.keras.Model):
         scale_log = self.scale_linear_transform_layer(scale_log[:,-1,:])
         # append
         static_vars_list.append(scale_log)
-        '''
-
-        if r_dim == 2:  # standard scaling used (mean,std)
-            # print(" standard r_dim")
-            # rel_age
-            rel_age = tf.strings.to_number(inputs[:, :, -4:-3], out_type=tf.dtypes.float32)
-            rel_age_enc = self.known_linear_transform_layers['rel_age'](rel_age)
-            # append
-            encoder_vars_list.append(rel_age_enc[:, :self.hist_len, :])
-            decoder_vars_list.append(rel_age_enc[:, -self.f_len:, :])
-
-            # scale
-            scale = tf.strings.to_number(inputs[:, :, -3:-1], out_type=tf.dtypes.float32)
-
-        elif r_dim == 1:
-            # print(" mean r_dim")
-            # rel_age
-            rel_age = tf.strings.to_number(inputs[:, :, -3:-2], out_type=tf.dtypes.float32)
-            rel_age_enc = self.known_linear_transform_layers['rel_age'](rel_age)
-            # append
-            encoder_vars_list.append(rel_age_enc[:, :self.hist_len, :])
-            decoder_vars_list.append(rel_age_enc[:, -self.f_len:, :])
-            # scale
-            scale = tf.strings.to_number(inputs[:, :, -2:-1], out_type=tf.dtypes.float32)
-
+        
         # Append additional columns
+        stat_cols_ordered_list = stat_cols_ordered_list + ['scale']
         past_cols_ordered_list = past_cols_ordered_list + ['rel_age']
         future_cols_ordered_list = future_cols_ordered_list + ['rel_age']
         
         # mask
-        mask = tf.strings.to_number(inputs[:, :, -1:], out_type=tf.dtypes.float32)
+        mask = tf.strings.to_number(inputs[:,:,-1:], out_type=tf.dtypes.float32)
         
         # model process
         if self.static_variables:
@@ -1127,28 +1035,13 @@ def TFT_Train(model,
     def trainstep(model, optimizer, x_train, y_train, scale, wts, training):
         with tf.GradientTape() as tape:
             o, s, f = model(x_train, training=training)
-            out_len = s.shape.as_list()[1]  # tf.shape(s)[1]
-            s_dim = scale.shape.as_list()[-1]  # tf.shape(scale)[-1]
+            out_len = tf.shape(s)[1]
             if loss_type in ['Normal','Poisson','Negbin']:
-                '''
                 if weighted_training:
                     loss = loss_function(y_train*scale[:,-out_len:,:], [s, wts])
                 else:
-                    loss = loss_function(y_train*scale[:,-out_len:,:], s)
-                '''
-                if s_dim == 1:
-                    if weighted_training:
-                        loss = loss_function(y_train * scale[:, -out_len:, :], [s, wts])
-                    else:
-                        loss = loss_function(y_train * scale[:, -out_len:, :], s)
-                else:
-                    s_mean = scale[:, -out_len:, 0:1]
-                    s_std = scale[:, -out_len:, 1:2]
-                    if weighted_training:
-                        loss = loss_function(y_train * s_std + s_mean, [s, wts])
-                    else:
-                        loss = loss_function(y_train * s_std + s_mean, s)
-            elif loss_type in ['Point','Binary']:
+                    loss = loss_function(y_train*scale[:,-out_len:,:], s)                           
+            elif loss_type in ['Point']:
                 if weighted_training:                               
                     loss = loss_function(y_train, [o, wts])
                 else:
@@ -1167,28 +1060,13 @@ def TFT_Train(model,
     @tf.function
     def teststep(model, x_test, y_test, scale, wts, training):
         o, s, f = model(x_test, training=training)
-        out_len = s.shape.as_list()[1]  # tf.shape(s)[1]
-        s_dim = scale.shape.as_list()[-1]  # tf.shape(scale)[-1]
+        out_len = tf.shape(s)[1]
         if loss_type in ['Normal','Poisson','Negbin']:
-            '''
             if weighted_training:
                 loss = loss_function(y_test*scale[:,-out_len:,:], [s, wts])
             else:
-                loss = loss_function(y_test*scale[:,-out_len:,:], s)    
-            '''
-            if s_dim == 1:
-                if weighted_training:
-                    loss = loss_function(y_test * scale[:, -out_len:, :], [s, wts])
-                else:
-                    loss = loss_function(y_test * scale[:, -out_len:, :], s)
-            else:
-                s_mean = scale[:, -out_len:, 0:1]
-                s_std = scale[:, -out_len:, 1:2]
-                if weighted_training:
-                    loss = loss_function(y_test * s_std + s_mean, [s, wts])
-                else:
-                    loss = loss_function(y_test * s_std + s_mean, s)
-        elif loss_type in ['Point','Binary']:
+                loss = loss_function(y_test*scale[:,-out_len:,:], s)                           
+        elif loss_type in ['Point']:
             if weighted_training:                               
                 loss = loss_function(y_test, [o, wts])
             else:
@@ -1496,16 +1374,7 @@ def TFT_Train(model,
         
 def TFT_Infer(model, inputs, loss_type, hist_len, f_len, target_index, num_quantiles):
     infer_tensor, scale, id_arr, date_arr = inputs
-
-    s_dim = scale.shape[-1]
-
-    if s_dim == 1:
-        scale = scale[:, -1:, -1]
-    else:
-        scale_mean = scale[:, -1:, 0]
-        scale_std = scale[:, -1:, 1]
-
-    #scale = scale[:,-1:,-1] #old
+    scale = scale[:,-1:,-1]
     window_len = hist_len + f_len
     stat_wts_df = None 
     encoder_wts_df = None 
@@ -1517,7 +1386,7 @@ def TFT_Infer(model, inputs, loss_type, hist_len, f_len, target_index, num_quant
         dist = dist.numpy()
         output_arr = dist[:,:,0]
         
-    elif loss_type in ['Point','Binary']:
+    elif loss_type in ['Point']:
         out = out.numpy()
         output_arr = out[:,:,0]
     
@@ -1556,31 +1425,18 @@ def TFT_Infer(model, inputs, loss_type, hist_len, f_len, target_index, num_quant
         output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0:'id','value':'forecast'})
         output_df = output_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
         
-    elif loss_type in ['Point','Binary']:
-
-        #output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr*scale.reshape(-1,1)), axis=1))
-        if s_dim == 1:
-            output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1, 1), output_arr * scale.reshape(-1, 1)), axis=1))
-        else:
-            output_arr = output_arr * scale_std.reshape(-1, 1) + scale_mean.reshape(-1, 1)
-            output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1, 1), output_arr), axis=1))
+    elif loss_type in ['Point']:
+        output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr*scale.reshape(-1,1)), axis=1))
         output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0:'id','value':'forecast'})
         output_df = output_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
         
     elif loss_type in ['Quantile']:
         df_list = []
         for i in range(num_quantiles):
-            if s_dim == 1:
-                output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr[:,:,i]*scale.reshape(-1,1)), axis=1))
-                output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0:'id','value': f"forecast_{i}"})
-                output_df = output_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
-                df_list.append(output_df)
-            else:
-                output_arr = output_arr * scale_std.reshape(-1, 1) + scale_mean.reshape(-1, 1)
-                output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1, 1), output_arr), axis=1))
-                output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0: 'id', 'value': f"forecast_{i}"})
-                output_df = output_df.rename_axis('index').sort_values(by=['id', 'index']).reset_index(drop=True)
-                df_list.append(output_df)
+            output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr[:,:,i]*scale.reshape(-1,1)), axis=1))
+            output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0:'id','value': f"forecast_{i}"})
+            output_df = output_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
+            df_list.append(output_df)
         output_df = pd.concat(df_list, axis=1)
         output_df = output_df.loc[:,~output_df.columns.duplicated()]
         
@@ -1676,24 +1532,13 @@ class Temporal_Fusion_Transformer:
               weighted_training=False,
               model_prefix='./tft_model',
               logdir='/tmp/tft_logs',
-              load_model=None,
               opt=None,
               clipnorm=None):
-
-        if load_model is None:
-            # Initialize Weights
-            for x,y,s,w in train_dataset.take(1):
-                self.model(x, training=False)
-        else:
-            # Initialize Weights
-            for x, y, s, w in train_dataset.take(1):
-                self.model(x, training=False)
-            saved_model = tf.keras.models.load_model(load_model)
-            self.model.set_weights(saved_model.get_weights())
-            del saved_model
-            gc.collect()
-            print("Saved model: {} loaded. Continuing training ...".format(load_model))
-
+        
+        # Initialize Weights
+        for x,y,s,w in train_dataset.take(1):
+            self.model(x, training=False)
+        
         best_model = TFT_Train(self.model, 
                                train_dataset, 
                                test_dataset, 

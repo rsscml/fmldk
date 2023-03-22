@@ -608,7 +608,10 @@ class sage_dataset:
             target_stddev = np.maximum(np.std(target[:, :max_input_len, :], axis=1, keepdims=True), 0.001)
             target_scaled = np.divide(np.subtract(target, target_mean), target_stddev)
             target_scaled = np.nan_to_num(target_scaled)  # correct where stddev is 0
-        
+        elif self.scaling_method == 'no_scaling':
+            target_nz_mean = 1.0
+            target_scaled = np.divide(target, target_nz_mean)
+
         # build model_in array  
         model_in = np.concatenate((sid, target_scaled), axis=-1)
         model_out = target_scaled[:,-self.fh:,:]
@@ -646,6 +649,11 @@ class sage_dataset:
                 known_stddev = np.maximum(np.std(known_num, axis=1, keepdims=True), 0.001)
                 known_num = np.divide(np.subtract(known_num, known_mean), known_stddev)
                 known_num = np.nan_to_num(known_num)
+            elif self.scaling_method == 'no_scaling':
+                known_nz_count = np.maximum(np.count_nonzero(np.abs(known_num), axis=1).reshape(-1, 1, len(self.temporal_known_num_indices)),1.0)
+                known_sum = np.sum(np.abs(known_num), axis=1, keepdims=True)
+                known_nz_mean = np.divide(known_sum, known_nz_count) + 1.0
+                known_num = np.divide(known_num, known_nz_mean)
             # merge
             model_in = np.concatenate((model_in, known_num), axis=-1)
 
@@ -667,6 +675,11 @@ class sage_dataset:
                 unknown_stddev = np.maximum(np.std(unknown_num[:, :max_input_len, :], axis=1, keepdims=True), 0.001)
                 unknown_num = np.divide(np.subtract(unknown_num, unknown_mean), unknown_stddev)
                 unknown_num = np.nan_to_num(unknown_num)
+            elif self.scaling_method == 'no_scaling':
+                unknown_nz_count = np.maximum(np.count_nonzero(np.abs(unknown_num[:, :max_input_len, :]), axis=1).reshape(-1, 1, len(self.temporal_unknown_num_indices)),1.0)
+                unknown_sum = np.sum(np.abs(unknown_num[:, :max_input_len, :]), axis=1, keepdims=True)
+                unknown_nz_mean = np.divide(unknown_sum, unknown_nz_count) + 1.0
+                unknown_num = np.divide(unknown_num, unknown_nz_mean)
             # merge
             model_in = np.concatenate((model_in, unknown_num), axis=-1)
    
@@ -695,6 +708,8 @@ class sage_dataset:
             scale_mean = np.broadcast_to(target_mean, target.shape)
             scale_std = np.broadcast_to(target_stddev, target.shape)
             scale_in = np.concatenate((scale_mean, scale_std), axis=-1)
+        elif self.scaling_method == 'no_scaling':
+            scale_in = np.broadcast_to(target_nz_mean, target.shape)
 
         model_in = np.concatenate((model_in, scale_in), axis=-1)
 
@@ -704,6 +719,8 @@ class sage_dataset:
             scale_mean_out = np.broadcast_to(target_mean, model_out.shape)
             scale_std_out = np.broadcast_to(target_stddev, model_out.shape)
             scale_out = np.concatenate((scale_mean_out, scale_std_out), axis=-1)
+        elif self.scaling_method == 'no_scaling':
+            scale_out = np.broadcast_to(target_nz_mean, model_out.shape)
 
         mask_list = []
         for pad_len in pad_arr:
@@ -724,6 +741,8 @@ class sage_dataset:
             weights = np.around(np.log10(np.squeeze(target_nz_mean) + 10), 2)  # /np.quantile(np.squeeze(target_nz_mean), q=0.8)
         elif self.scaling_method == 'standard_scaling':
             weights = np.around(np.log10(np.squeeze(target_mean) + 10), 2)
+        elif self.scaling_method == 'no_scaling':
+            weights = np.around(np.log10(np.squeeze(target_nz_mean) + 10), 2)
 
         weights = np.clip(weights, a_min=1.0, a_max=5.0)
         weights = weights.reshape(-1,1)
@@ -913,6 +932,8 @@ class sage_dataset:
             actuals_arr = model_out * scale
         elif self.scaling_method == 'standard_scaling':
             actuals_arr = model_out * scale[:, :, 1:2] + scale[:, :, 0:1]
+        elif self.scaling_method == 'no_scaling':
+            actuals_arr = model_out * scale
         
         if len(self.static_cat_col_list)>0:
             stat_arr_list = []

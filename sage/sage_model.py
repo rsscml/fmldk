@@ -9,6 +9,7 @@ import pickle
 import absl.logging
 absl.logging.set_verbosity(absl.logging.ERROR)
 import pandas as pd
+import gc
 
 
 # Distribution Sampling functions
@@ -725,6 +726,8 @@ class SageTransformer(tf.keras.Model):
         
         if self.loss_fn == 'Point':
             self.final_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1))
+        elif self.loss_fn == 'Binary':
+            self.final_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1, activation='sigmoid'))
         elif self.loss_fn == 'Poisson':
             self.final_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1, activation='softplus'))
         elif self.loss_fn == 'Quantile':
@@ -755,6 +758,7 @@ class SageTransformer(tf.keras.Model):
         
         # scale -- old
         #scale = scale[:,-1:,:]
+
         # scale -- new
         scale = scale[:, -1:, :]
         s_dim = scale.shape.as_list()[-1]
@@ -791,6 +795,8 @@ class SageTransformer(tf.keras.Model):
         decoder_weights = decoder_weights[:, -self.f_len:, :]
         
         if self.loss_fn == 'Point':
+            out = self.final_layer(dec_output, training=training)
+        elif self.loss_fn == 'Binary':
             out = self.final_layer(dec_output, training=training)
         elif self.loss_fn == 'Poisson':
             if scaler == 'mean_scaler':
@@ -1027,27 +1033,32 @@ class SageTransformer_Model(tf.keras.Model):
             # rel_age
             rel_age = tf.strings.to_number(inputs[:, :-1, -4:-3], out_type=tf.dtypes.float32)
             rel_age_dec = self.known_linear_transform_layers['rel_age'](rel_age)
+
             # append
             decoder_vars_list.append(rel_age_dec)
+
             # scale
-            scale = tf.strings.to_number(inputs[:, :-1, -3:-1], out_type=tf.dtypes.float32)
-            scale_log = scale[:,:,0:1] #tf.math.log(tf.math.sqrt(tf.abs(scale[:,:,0:1]))) # mean
-            scale_log = self.scale_linear_transform_layer(scale_log[:,-1,:])
+            scale = tf.strings.to_number(inputs[:,:-1, -3:-1], out_type=tf.dtypes.float32)
+            #scale_log = scale[:,:,0:1] #tf.math.log(tf.math.sqrt(tf.abs(scale[:,:,0:1]))) # mean
+            #scale_log = self.scale_linear_transform_layer(scale_log[:,-1,:])
             # append
-            static_vars_list.append(scale_log)
+            #static_vars_list.append(scale_log)
+
         elif r_dim == 1:
             # print(" mean r_dim")
             # rel_age
             rel_age = tf.strings.to_number(inputs[:, :-1, -3:-2], out_type=tf.dtypes.float32)
             rel_age_dec = self.known_linear_transform_layers['rel_age'](rel_age)
+
             # append
             decoder_vars_list.append(rel_age_dec)
+
             # scale
-            scale = tf.strings.to_number(inputs[:, :-1, -2:-1], out_type=tf.dtypes.float32)
-            scale_log = scale #tf.math.log(tf.math.sqrt(scale))
-            scale_log = self.scale_linear_transform_layer(scale_log[:,-1,:])
+            scale = tf.strings.to_number(inputs[:,:-1, -2:-1], out_type=tf.dtypes.float32)
+            #scale_log = scale #tf.math.log(tf.math.sqrt(scale))
+            #scale_log = self.scale_linear_transform_layer(scale_log[:,-1,:])
             # append
-            static_vars_list.append(scale_log)
+            #static_vars_list.append(scale_log)
         
         # Append additional columns
         stat_cols_ordered_list = stat_cols_ordered_list + ['scale']
@@ -1122,7 +1133,7 @@ def SageTransformer_Train(model,
                         loss = loss_function(y_train * s_std + s_mean, [s, wts])
                     else:
                         loss = loss_function(y_train * s_std + s_mean, s)
-            elif loss_type in ['Point']:
+            elif loss_type in ['Point','Binary']:
                 if weighted_training:                               
                     loss = loss_function(y_train, [o, wts])
                 else:
@@ -1156,7 +1167,7 @@ def SageTransformer_Train(model,
                     loss = loss_function(y_test * s_std + s_mean, [s, wts])
                 else:
                     loss = loss_function(y_test * s_std + s_mean, s)
-        elif loss_type in ['Point']:
+        elif loss_type in ['Point','Binary']:
             if weighted_training:                               
                 loss = loss_function(y_test, [o, wts])
             else:
@@ -1494,7 +1505,7 @@ def SageTransformer_InferRecursive(model, inputs, loss_type, hist_len, f_len, ta
                 infer_arr[:, hist_len:hist_len + i + 1, target_index] = out[:, 0:i + 1, 0] / scale
             else:
                 infer_arr[:, hist_len:hist_len + i + 1, target_index] = np.nan_to_num((out[:, 0:i + 1, 0] - scale_mean) / scale_std)
-        elif loss_type in ['Point','Quantile']:
+        elif loss_type in ['Point','Quantile','Binary']:
             out = out.numpy()
             output.append(out[:,i:i+1,0])
             infer_arr = infer_tensor.numpy()
@@ -1527,7 +1538,7 @@ def SageTransformer_InferRecursive(model, inputs, loss_type, hist_len, f_len, ta
     # rescale if necessary
     if loss_type in ['Normal','Poisson','Negbin']:
         output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr), axis=1))
-    elif loss_type in ['Point','Quantile']:
+    elif loss_type in ['Point','Quantile','Binary']:
         #output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr*scale.reshape(-1,1)), axis=1))
         # new
         if s_dim == 1:

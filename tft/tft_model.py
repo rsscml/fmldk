@@ -1599,8 +1599,8 @@ def TFT_Infer(model, inputs, loss_type, hist_len, f_len, target_index, num_quant
                 output_df = output_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
                 df_list.append(output_df)
             else:
-                output_arr = output_arr[:,:,i]* scale_std.reshape(-1, 1) + scale_mean.reshape(-1, 1)
-                output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1, 1), output_arr), axis=1))
+                output = output_arr[:,:,i]* scale_std.reshape(-1, 1) + scale_mean.reshape(-1, 1)
+                output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1, 1), output), axis=1))
                 output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0: 'id', 'value': f"forecast_{i}"})
                 output_df = output_df.rename_axis('index').sort_values(by=['id', 'index']).reset_index(drop=True)
                 df_list.append(output_df)

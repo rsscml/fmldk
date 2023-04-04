@@ -1,9 +1,4 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[ ]:
-
-
+# Databricks notebook source
 import numpy as np
 import math as m
 import tensorflow as tf
@@ -15,9 +10,6 @@ import absl.logging
 absl.logging.set_verbosity(absl.logging.ERROR)
 import pandas as pd
 import gc
-
-
-# In[ ]:
 
 
 # Distribution Sampling functions
@@ -68,12 +60,6 @@ def GumbelSample(a, b, n_samples=1):
 
 def min_power_of_2(x):
     return m.ceil(m.log2(x))
-
-
-# In[ ]:
-
-
-# Model Class - Dense Transformer w/ Variable Selection
 
 # Positional Encoding
 
@@ -263,6 +249,33 @@ def point_wise_feed_forward_network(d_model, dff):
                                 tf.keras.layers.Dense(d_model)  # (batch_size, seq_len, d_model)
                                ])
     
+# Encoder Layer - Conv Attention
+
+class ConvEncoderLayer(tf.keras.layers.Layer):
+    def __init__(self, d_model, num_heads, kernel_sizes, dff, rate):
+        super(ConvEncoderLayer, self).__init__()
+
+        self.mha = MultiHeadConvAttention(d_model, num_heads, kernel_sizes)
+        self.ffn = point_wise_feed_forward_network(d_model, dff)
+
+        self.layernorm1 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
+        self.layernorm2 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
+    
+        self.dropout1 = tf.keras.layers.Dropout(rate)
+        self.dropout2 = tf.keras.layers.Dropout(rate)
+    
+    def call(self, x, mask, training):
+
+        attn_output, _ = self.mha(x, x, x, mask, training=training)  # (batch_size, input_seq_len, d_model)
+        attn_output = self.dropout1(attn_output, training=training)
+        out1 = self.layernorm1(x + attn_output)                      # (batch_size, input_seq_len, d_model)
+    
+        ffn_output = self.ffn(out1, training=training)               # (batch_size, input_seq_len, d_model)
+        ffn_output = self.dropout2(ffn_output, training=training)
+        out2 = self.layernorm2(out1 + ffn_output)                    # (batch_size, input_seq_len, d_model)
+    
+        return out2
+
 
 # Decoder Layer - Conv Attention
 
@@ -292,21 +305,60 @@ class ConvDecoderLayer(tf.keras.layers.Layer):
     
         return out2, attn_weights_block1
 
+
+# Conv Encoder Module
+
+class ConvEncoder(tf.keras.layers.Layer):
+    def __init__(self, num_layers, d_model, num_heads, kernel_sizes, dff, maximum_position_encoding, rate):
+        super(ConvEncoder, self).__init__()
+
+        self.d_model = d_model
+        self.num_layers = num_layers
+    
+        self.pos_encoding = positional_encoding(maximum_position_encoding, self.d_model)
+        
+        self.enc_layers = [ConvEncoderLayer(d_model, num_heads, kernel_sizes, dff, rate) for _ in range(num_layers)]
+  
+        self.dropout = tf.keras.layers.Dropout(rate)
+        
+    def call(self, x, mask, training):
+
+        seq_len = tf.shape(x)[1]
+    
+        # adding position encoding.
+        x += self.pos_encoding[:, :seq_len, :]
+        
+        x = self.dropout(x, training=training)
+    
+        for i in range(self.num_layers):
+            x = self.enc_layers[i](x, mask, training=training)
+    
+        return x  # (batch_size, input_seq_len, d_model)
+
 # Conv Decoder Module
 
 class ConvDecoder(tf.keras.layers.Layer):
-    def __init__(self, num_layers, d_model, num_heads, kernel_sizes, dff, rate):
+    def __init__(self, num_layers, d_model, num_heads, kernel_sizes, dff, maximum_position_encoding, rate):
         super(ConvDecoder, self).__init__()
 
         self.d_model = d_model
         self.num_layers = num_layers
+    
+        self.pos_encoding = positional_encoding(maximum_position_encoding, d_model)
+        
         self.dec_layers = [ConvDecoderLayer(d_model, num_heads, kernel_sizes, dff, rate) for _ in range(num_layers)]
         
+        self.dropout = tf.keras.layers.Dropout(rate)
+    
     def call(self, x, look_ahead_mask, padding_mask, training):
 
         seq_len = tf.shape(x)[1]
         attention_weights = {}
-        
+    
+        x += self.pos_encoding[:, -seq_len:, :]
+    
+        x = self.dropout(x, training=training)
+
         for i in range(self.num_layers):
             x, block1 = self.dec_layers[i](x, look_ahead_mask, padding_mask, training=training)
       
@@ -474,50 +526,23 @@ class static_contexts(tf.keras.layers.Layer):
         return static_var_select_vec
       
 class static_enrichment_layer(tf.keras.layers.Layer):
-    def __init__(self, hidden_layer_size, context, dropout_rate):
+    def __init__(self, hidden_layer_size, dropout_rate):
         super(static_enrichment_layer, self).__init__()
 
         self.hidden_layer_size = hidden_layer_size
         self.dropout_rate = dropout_rate
-        self.context = context
         self.grn_enrich = gated_residual_network(hidden_layer_size=self.hidden_layer_size,
                                                  output_size=None,
                                                  dropout_rate=self.dropout_rate,
                                                  use_time_distributed=True,
-                                                 additional_context=self.context,
+                                                 additional_context=True,
                                                  return_gate=False)
-    def call(self, inputs, training):
-        if self.context:
-            x,c = inputs
-            c = tf.expand_dims(c, axis=1)
-            enriched = self.grn_enrich([x,c], training=training)
-        else:
-            x = inputs
-            enriched = self.grn_enrich(x, training=training)
-            
+    def call(self,inputs, training):
+        # inputs: [temporal_features, static_enrichment_vec]
+        x,c = inputs
+        c = tf.expand_dims(c, axis=1)
+        enriched = self.grn_enrich([x,c], training=training)
         return enriched
-
-# LSTM Layer
-
-class lstm_layer(tf.keras.layers.Layer):
-    def __init__(self, hidden_layer_size, rnn_layers, dropout_rate):
-        super(lstm_layer, self).__init__()
-
-        self.rnn_layers = rnn_layers
-        self.hidden_layer_size = hidden_layer_size
-        self.dropout_rate = dropout_rate
-        self.temporal_layer = tf.keras.layers.LSTM(units=hidden_layer_size, return_state=True, return_sequences=True)
-        self.gate = apply_gating_layer(hidden_layer_size=self.hidden_layer_size, dropout_rate=self.dropout_rate, use_time_distributed=True,activation=None)
-        self.add_norm = add_norm_layer()
-
-    def call(self, inputs, training):
-        decoder_in, init_states = inputs
-        lstm_out, enc_h, enc_c = self.temporal_layer(decoder_in, initial_state=init_states, training=training)
-        # Apply gating layer
-        lstm_out, _ = self.gate(lstm_out, training=training)
-        temporal_features = self.add_norm([lstm_out, decoder_in], training=training)
-        return temporal_features
-
       
 class lstm_init_states(tf.keras.layers.Layer):
     """
@@ -588,6 +613,7 @@ class temporal_variable_selection_layer(tf.keras.layers.Layer):
             mlp_outputs = self.grn_flat(flatten, training=training) #[batch,time_steps,num_vars]
         
         dynamic_weights = tf.keras.layers.TimeDistributed(tf.keras.layers.Activation('softmax'))(mlp_outputs) #[batch,time_steps,num_vars]
+        #weights = tf.expand_dims(dynamic_weights, axis=2) #[batch,time_steps,1,num_vars]
         weights = tf.expand_dims(dynamic_weights, axis=-1) #[batch,time_steps,num_vars,1]
         
         trans_emb_list = []
@@ -595,10 +621,14 @@ class temporal_variable_selection_layer(tf.keras.layers.Layer):
             e = self.grn_var[i](inputs[i], training=training)
             trans_emb_list.append(e)
         
+        #trans_embedding = tf.stack(trans_emb_list, axis=-1) #[batch,time_steps,hidden_layer_size,num_vars]
         trans_embedding = tf.stack(trans_emb_list, axis=2) #[batch,time_steps,num_vars,hidden_layer_size]
+        
         combined = tf.keras.layers.Multiply()([weights, trans_embedding])
+        #tfr_input = tf.reduce_sum(combined, axis=-1) #[batch,time_steps,hidden_layers_size]
         tfr_input = tf.reduce_sum(combined, axis=2) #[batch,time_steps,hidden_layers_size]
-       
+        
+        #print("tfr_input shape:, dynamic_wts shape: ", tfr_input.shape, dynamic_weights.shape)
         return tfr_input, dynamic_weights
       
 class all_variable_select_concat_layer(tf.keras.layers.Layer):
@@ -643,27 +673,6 @@ class all_variable_select_concat_layer(tf.keras.layers.Layer):
         tfr_input = tf.reshape(combined, [batch_size, timesteps, -1]) #[batch,time_steps,hidden_layers_size]
         
         return tfr_input, dynamic_weights   
-    
-    
-class final_gating_layer(tf.keras.layers.Layer):
-    def __init__(self, hidden_layer_size, dropout_rate):
-        super(final_gating_layer, self).__init__()
-        self.hidden_layer_size = hidden_layer_size
-        self.dropout_rate = dropout_rate
-        self.gate = apply_gating_layer(hidden_layer_size=self.hidden_layer_size,
-                                       dropout_rate=self.dropout_rate,
-                                       use_time_distributed=True,
-                                       activation=None)
-        self.add_norm = add_norm_layer()
-
-    def call(self, inputs, training):
-
-        attn_out, temporal_features = inputs
-        # final gating layer
-        attn_out, _ = self.gate(attn_out, training=training)
-        # final add & norm
-        out = self.add_norm([attn_out, temporal_features], training=training)
-        return out
 
 
 class CausalConvEncoder(tf.keras.layers.Layer):
@@ -680,35 +689,39 @@ class CausalConvEncoder(tf.keras.layers.Layer):
             x = layer(x, training=training)
         state = x #[:,-1:,:] # return last hidden state 
         return state
-    
-    
+
+
 class CausalConvResidualLayer(tf.keras.layers.Layer):
     def __init__(self, d_model, seq_len, dropout_rate):
         super(CausalConvResidualLayer, self).__init__()
         self.seq_len = seq_len
         num_causal_layers = int(min_power_of_2(self.seq_len))
-        
-        
-        self.conv1x1 = tf.keras.layers.Conv1D(filters=d_model, kernel_size=1) 
+
+        self.conv1x1 = tf.keras.layers.Conv1D(filters=d_model, kernel_size=1)
         self.causalconvlayer1 = CausalConvEncoder(d_model=d_model, num_layers=num_causal_layers)
+
         self.conv_dropout1 = tf.keras.layers.Dropout(dropout_rate)
+
         self.conv_layernorm1 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
+
         self.conv_activation1 = tf.keras.layers.Activation('selu')
+
         self.conv_add = tf.keras.layers.Add()
-        
+
     def call(self, inputs, training):
         x = inputs
-        
+
         y = self.conv1x1(x)
+
         x = self.causalconvlayer1(x)
         x = self.conv_layernorm1(x)
         x = self.conv_activation1(x)
         x = self.conv_dropout1(x)
-        
-        out = self.conv_add([x,y])
-        
+
+        out = self.conv_add([x, y])
+
         return out
-        
+
 
 # Variable Weighted Transformer Model
 
@@ -733,22 +746,21 @@ class SageTransformer(tf.keras.Model):
         self.stat_variables = static_variables
         self.num_quantiles = num_quantiles
         self.seq_len = int(hist_len + f_len)
-        self.num_causal_layers = int(min_power_of_2(self.seq_len)) 
+        
+        self.decoder = ConvDecoder(num_layers, d_model, num_heads, kernel_sizes, dff, self.seq_len, rate)
         
         if self.stat_variables:
             self.static_input_layer = static_variable_selection_layer(hidden_layer_size=d_model, output_size=None, dropout_rate=rate)
             self.static_context_layer = static_contexts(hidden_layer_size=d_model, output_size=None, dropout_rate=rate)
-            self.enrich_vector_layer = static_contexts(hidden_layer_size=d_model, output_size=None, dropout_rate=rate)
-            self.init_states_layer = lstm_init_states(hidden_layer_size=d_model, output_size=d_model, dropout_rate=rate)
+            self.static_enrich_layer = static_contexts(hidden_layer_size=d_model, output_size=None, dropout_rate=rate)
+            self.decoder_enrich = add_norm_layer()
         
-        self.static_enrich_layer = static_enrichment_layer(hidden_layer_size=d_model, context=self.stat_variables, dropout_rate=rate)
         self.decoder_input_layer = temporal_variable_selection_layer(hidden_layer_size=d_model, output_size=None, context=self.stat_variables, dropout_rate=rate)
-        self.recurrent_layer = lstm_layer(hidden_layer_size=d_model, rnn_layers=1, dropout_rate=rate)
-        self.decoder = ConvDecoder(num_layers, d_model, num_heads, kernel_sizes, dff, rate)
-        self.pff_layer = final_gating_layer(hidden_layer_size=d_model, dropout_rate=rate)
         
         if self.loss_fn == 'Point':
             self.final_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1))
+        elif self.loss_fn == 'Binary':
+            self.final_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1, activation='sigmoid'))
         elif self.loss_fn == 'Poisson':
             self.final_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1, activation='softplus'))
         elif self.loss_fn == 'Quantile':
@@ -776,66 +788,55 @@ class SageTransformer(tf.keras.Model):
             static_vars_list, decoder_vars_list, mask, scale = inputs
         else:
             decoder_vars_list, mask, scale = inputs
-            
-        # scale
-        scale = scale[:,-1:,:]
-        s_dim = scale.shape.as_list()[-1] 
         
+        # scale -- old
+        #scale = scale[:,-1:,:]
+
+        # scale -- new
+        scale = scale[:, -1:, :]
+        s_dim = scale.shape.as_list()[-1]
+
         if s_dim == 2:
+            # print("standard scaling used")
             scaler = 'standard_scaler'
-            scale_mean = scale[:,:,0:1]
-            scale_std = scale[:,:,1:2]
+            scale_mean = scale[:, :, 0:1]
+            scale_std = scale[:, :, 1:2]
         else:
+            # print("mean scaling used")
             scaler = 'mean_scaler'
-            scale_mean = scale[:,:,0:1]
-            scale_std = scale[:,:,0:1]
-        
+            scale_mean = scale[:, :, 0:1]
+            scale_std = scale[:, :, 0:1]
+
         # static var selection 
         if self.stat_variables:
             static_vec, static_weights = self.static_input_layer(static_vars_list, training=training)
             context = self.static_context_layer(static_vec, training=training)
-            enrichment_vec = self.enrich_vector_layer(static_vec, training=training)
-            init_h, init_c = self.init_states_layer(static_vec)            
+            static_enrichment_vec = self.static_enrich_layer(static_vec, training=training)
+            static_enrichment_vec = tf.expand_dims(static_enrichment_vec, axis=1)
+
             # dec input prep
             target_d, decoder_weights = self.decoder_input_layer([decoder_vars_list, context], training=training)
-
+            target_d = self.decoder_enrich([target_d, static_enrichment_vec])
         else:
             static_weights = None
             target_d, decoder_weights = self.decoder_input_layer(decoder_vars_list, training=training)
-            init_h, init_c = tf.zeros([batch_size, self.hidden_layer_size], dtype=tf.float32), tf.zeros([batch_size, self.hidden_layer_size], dtype=tf.float32)
-            
-        # lstm init states
-        init_states = [init_h, init_c]
-        
-        # recurrent_layer
-        temporal_features = self.recurrent_layer([target_d, init_states], training=training)
-        
-        # static feature enrichment
-        if self.stat_variables:
-            enriched_features = self.static_enrich_layer([temporal_features, enrichment_vec], training=training)
-        else:
-            enriched_features = self.static_enrich_layer(temporal_features, training=training)
-        
-        # masks
+          
         padding_mask = create_padding_mask(mask[:,:self.seq_len,0])
         look_ahead_mask = create_look_ahead_mask(self.seq_len)
-        
-        # attention stack
-        dec_output, _ = self.decoder(enriched_features, look_ahead_mask, padding_mask, training=training)
-        
-        # final_gating_layer
-        dec_output = self.pff_layer([dec_output, temporal_features], training=training)
-        
+        dec_output, _ = self.decoder(target_d, look_ahead_mask, padding_mask, training=training)
         dec_output = dec_output[:,-self.f_len:,:]
         decoder_weights = decoder_weights[:, -self.f_len:, :]
         
         if self.loss_fn == 'Point':
             out = self.final_layer(dec_output, training=training)
+        elif self.loss_fn == 'Binary':
+            out = self.final_layer(dec_output, training=training)
         elif self.loss_fn == 'Poisson':
             if scaler == 'mean_scaler':
-                mean = self.final_layer(dec_output, training=training)*scale
+                mean = self.final_layer(dec_output, training=training) * scale
             elif scaler == 'standard_scaler':
-                mean = self.final_layer(dec_output, training=training)*scale_std + scale_mean
+                mean = self.final_layer(dec_output, training=training) * scale_std + scale_mean
+            #mean = self.final_layer(dec_output, training=training)*scale -- old
             parameters = mean
             out = poisson_sample(mu=mean)
         elif self.loss_fn == 'Quantile':
@@ -845,34 +846,36 @@ class SageTransformer(tf.keras.Model):
                 out = self.proj_intrcpt(dec_output, training=training)
         elif self.loss_fn == 'Normal':
             if scaler == 'mean_scaler':
-                mean = self.m_layer(dec_output, training=training)*scale       # (batch, f_len, 1)
-                stddev = self.s_layer(dec_output, training=training)*scale      # (batch, f_len, 1)
+                mean = self.m_layer(dec_output, training=training) * scale  # (batch, f_len, 1)
+                stddev = self.s_layer(dec_output, training=training) * scale  # (batch, f_len, 1)
             elif scaler == 'standard_scaler':
-                mean = self.m_layer(dec_output, training=training)*scale_std + scale_mean       # (batch, f_len, 1)
-                stddev = self.s_layer(dec_output, training=training)*scale_std     # (batch, f_len, 1)     
+                mean = self.m_layer(dec_output, training=training) * scale_std + scale_mean  # (batch, f_len, 1)
+                stddev = self.s_layer(dec_output, training=training) * scale_std  # (batch, f_len, 1)
+            #mean = self.m_layer(dec_output, training=training)*scale       # (batch, f_len, 1)  -- old
+            #stddev = self.s_layer(dec_output, training=training)*scale      # (batch, f_len, 1) -- old
             parameters = tf.concat([mean, stddev], axis=-1)
             out = normal_sample(mean, stddev)
         elif self.loss_fn == 'Negbin':
             if scaler == 'mean_scaler':
-                mean = self.m_layer(dec_output, training=training)*scale       # (batch, f_len, 1)
-                alpha = self.a_layer(dec_output, training=training)*tf.sqrt(scale)      # (batch, f_len, 1)
+                mean = self.m_layer(dec_output, training=training) * scale  # (batch, f_len, 1)
+                alpha = self.a_layer(dec_output, training=training) * tf.sqrt(scale)  # (batch, f_len, 1)
             elif scaler == 'standard_scaler':
-                mean = self.m_layer(dec_output, training=training)*scale_std + scale_mean       # (batch, f_len, 1)
-                alpha = self.a_layer(dec_output, training=training)*tf.sqrt(scale_std)      # (batch, f_len, 1)
+                mean = self.m_layer(dec_output, training=training) * scale_std + scale_mean  # (batch, f_len, 1)
+                alpha = self.a_layer(dec_output, training=training) * tf.sqrt(scale_std)  # (batch, f_len, 1)
+            #mean = self.m_layer(dec_output, training=training)*scale       # (batch, f_len, 1) -- old
+            #alpha = self.a_layer(dec_output, training=training)*tf.sqrt(scale)      # (batch, f_len, 1) -- old
             parameters = tf.concat([mean, alpha], axis=-1)
             out = negbin_sample(mean, alpha)
         else:
             raise ValueError('Invalid Loss Function.')
-        
-        #print("decoder op shape: ", dec_output.shape)
-        #print("decoder wts shape: ", decoder_weights.shape)
+
         if self.loss_fn == 'Point' or self.loss_fn == 'Quantile':
             return out, scale, static_weights, decoder_weights
         else:
             return out, parameters, static_weights, decoder_weights
 
 
-# VarTransformer Wrapper
+# SageTransformer Wrapper
 
 class SageTransformer_Model(tf.keras.Model):
     def __init__(self,
@@ -896,6 +899,7 @@ class SageTransformer_Model(tf.keras.Model):
         self.col_index_dict = col_index_dict
         self.vocab_dict = vocab_dict
         
+        self.num_causal_layers = int(min_power_of_2(self.hist_len+self.f_len)) 
         self.num_layers = num_layers
         self.num_heads = num_heads
         self.kernel_sizes = kernel_sizes
@@ -914,7 +918,7 @@ class SageTransformer_Model(tf.keras.Model):
                                     d_model = d_model,
                                     num_heads = num_heads, 
                                     kernel_sizes = kernel_sizes,
-                                    dff = d_model,
+                                    dff = int(2*d_model),
                                     hist_len = self.hist_len, 
                                     f_len = self.f_len,
                                     loss_fn = self.loss_type,
@@ -936,7 +940,7 @@ class SageTransformer_Model(tf.keras.Model):
                 cat_lookup_table = tf.lookup.StaticVocabularyTable(cat_init, 1)
                 self.stat_lookup_tables[colname] = cat_lookup_table
                 self.stat_embed_layers[colname] = tf.keras.layers.Embedding(input_dim = len(values) + 1, 
-                                                                            output_dim = d_model,
+                                                                            output_dim = emb,
                                                                             name = "embedding_layer_{}".format(colname))
         # Create temporal known cat embedding layers
         self.temporal_known_col_details = vocab_dict.get('temporal_known_cat_indices', None)
@@ -953,7 +957,7 @@ class SageTransformer_Model(tf.keras.Model):
                 cat_lookup_table = tf.lookup.StaticVocabularyTable(cat_init, 1)
                 self.temporal_known_lookup_tables[colname] = cat_lookup_table
                 self.temporal_known_embed_layers[colname] = tf.keras.layers.Embedding(input_dim = len(values) + 1, 
-                                                                                      output_dim = d_model,
+                                                                                      output_dim = emb,
                                                                                       name = "embedding_layer_{}".format(colname))
         
         # columns names & indices
@@ -967,9 +971,11 @@ class SageTransformer_Model(tf.keras.Model):
         
         # Create Numerical Embedding (Linear Transform) Layers
         
-        self.target_linear_transform_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=d_model, use_bias=False))
-        #self.hist_encode_layer = tf.keras.layers.LSTM(units=d_model, return_state=False, return_sequences=True) 
-      
+        self.target_linear_transform_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=d_model, use_bias=False)) 
+        #self.scale_linear_transform_layer = tf.keras.layers.Dense(units=d_model, use_bias=False)
+        self.hist_encode_layer = CausalConvEncoder(d_model=d_model, num_layers=self.num_causal_layers)
+        #self.hist_encode_layer = CausalConvResidualLayer(d_model=d_model, seq_len=int(self.hist_len+self.f_len), dropout_rate=dropout_rate)
+
         if len(self.stat_num_col_names)>0:
             self.stat_linear_transform_layers = {}
             for colname in self.stat_num_col_names:
@@ -981,15 +987,15 @@ class SageTransformer_Model(tf.keras.Model):
                 self.known_linear_transform_layers[colname] = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=d_model, use_bias=False))
                 
     def call(self, inputs, training):
-        
+
         # total_dim
-        t_dim = inputs.shape.as_list()[-1] - 3 # reduce 2 dims for mask,rel_age,scale
+        t_dim = inputs.shape.as_list()[-1] - 3  # reduce 2 dims for mask,rel_age,scale
         dim_counter = 0
         
         # target
         target = tf.strings.to_number(inputs[:,:,self.target_index:self.target_index+1], out_type=tf.dtypes.float32)
         dim_counter += 1
-        
+
         # transform to model dim
         target = self.target_linear_transform_layer(target)
         
@@ -1003,9 +1009,10 @@ class SageTransformer_Model(tf.keras.Model):
         future_cols_ordered_list = future_cols_ordered_list + [self.target_col_name]
         
         # recurrent state encoding w/ causal conv encoder
-        #recurrent_state = self.hist_encode_layer(target[:,:-1,:]) # (batch, seq_len-1, d_model)
-        #decoder_vars_list.append(recurrent_state) # encoded state till current timestep
-        #future_cols_ordered_list = future_cols_ordered_list + ['{}_past_encoding'.format(self.target_col_name)]
+        recurrent_state = self.hist_encode_layer(target[:,:-1,:]) # (batch, seq_len-1, d_model)
+        decoder_vars_list.append(recurrent_state) # encoded state till current timestep
+       
+        future_cols_ordered_list = future_cols_ordered_list + ['{}_past_encoding'.format(self.target_col_name)]
         
         # static numeric
         if len(self.stat_num_indices)>0:
@@ -1027,7 +1034,7 @@ class SageTransformer_Model(tf.keras.Model):
                 # append
                 static_vars_list.append(stat_var_embeddings[:,-1,:])
                 dim_counter += 1
-                
+
         # known numeric 
         if len(self.known_num_indices)>0:
             future_cols_ordered_list = future_cols_ordered_list + self.known_num_col_names
@@ -1048,56 +1055,51 @@ class SageTransformer_Model(tf.keras.Model):
                 # append
                 decoder_vars_list.append(cat_var_embeddings)
                 dim_counter += 1
-                
-        # unsued cols for this model
-        if len(self.unknown_num_indices)>0:
-            for col, i in zip(self.unknown_num_col_names, self.unknown_num_indices):
-                dim_counter += 1
-        
-        if len(self.unknown_cat_indices)>0:
-            for col, i in zip(self.unknown_cat_col_names, self.unknown_cat_indices):
-                dim_counter += 1
-                
+
         # remaining_dim
         r_dim = t_dim - dim_counter
 
         # default scale
-        scale = tf.strings.to_number(inputs[:,:-1,-2:-1], out_type=tf.dtypes.float32)
-        
-        if r_dim == 2: # standard scaling used (mean,std)
-            #print(" standard r_dim")
+        scale = tf.strings.to_number(inputs[:, :-1, -2:-1], out_type=tf.dtypes.float32)
+
+        if r_dim == 2:  # standard scaling used (mean,std)
+            # print(" standard r_dim")
             # rel_age
-            rel_age = tf.strings.to_number(inputs[:,:-1,-4:-3], out_type=tf.dtypes.float32)
+            rel_age = tf.strings.to_number(inputs[:, :-1, -4:-3], out_type=tf.dtypes.float32)
             rel_age_dec = self.known_linear_transform_layers['rel_age'](rel_age)
+
             # append
             decoder_vars_list.append(rel_age_dec)
+
             # scale
-            scale = tf.strings.to_number(inputs[:,:-1,-3:-1], out_type=tf.dtypes.float32)
-            #scale_log = scale[:,:,0:1] #tf.math.log(tf.math.sqrt(scale[:,:,0:1]))
+            scale = tf.strings.to_number(inputs[:,:-1, -3:-1], out_type=tf.dtypes.float32)
+            #scale_log = scale[:,:,0:1] #tf.math.log(tf.math.sqrt(tf.abs(scale[:,:,0:1]))) # mean
             #scale_log = self.scale_linear_transform_layer(scale_log[:,-1,:])
             # append
             #static_vars_list.append(scale_log)
+
         elif r_dim == 1:
-            #print(" mean r_dim")
-             # rel_age
-            rel_age = tf.strings.to_number(inputs[:,:-1,-3:-2], out_type=tf.dtypes.float32)
+            # print(" mean r_dim")
+            # rel_age
+            rel_age = tf.strings.to_number(inputs[:, :-1, -3:-2], out_type=tf.dtypes.float32)
             rel_age_dec = self.known_linear_transform_layers['rel_age'](rel_age)
+
             # append
             decoder_vars_list.append(rel_age_dec)
+
             # scale
-            scale = tf.strings.to_number(inputs[:,:-1,-2:-1], out_type=tf.dtypes.float32)
-            #scale_log = tf.math.log(tf.math.sqrt(scale))
+            scale = tf.strings.to_number(inputs[:, :-1, -2:-1], out_type=tf.dtypes.float32)
+            #scale_log = scale #tf.math.log(tf.math.sqrt(scale))
             #scale_log = self.scale_linear_transform_layer(scale_log[:,-1,:])
             # append
             #static_vars_list.append(scale_log)
-            
+        
         # Append additional columns
         #stat_cols_ordered_list = stat_cols_ordered_list + ['scale']
         future_cols_ordered_list = future_cols_ordered_list + ['rel_age']
         
         # mask
         mask = tf.strings.to_number(inputs[:,:-1,-1:], out_type=tf.dtypes.float32)
-        
         
         # model process
         if self.static_variables:
@@ -1113,7 +1115,6 @@ class SageTransformer_Model(tf.keras.Model):
     
     
 def SageTransformer_Train(model,
-                      target_index,
                       train_dataset, 
                       test_dataset, 
                       loss_type,
@@ -1125,8 +1126,7 @@ def SageTransformer_Train(model,
                       prefill_buffers,
                       num_train_samples,
                       num_test_samples,
-                      train_batch_size,
-                      test_batch_size,
+                      train_batch_size,       
                       train_steps_per_epoch,
                       test_steps_per_epoch,
                       patience,
@@ -1134,9 +1134,7 @@ def SageTransformer_Train(model,
                       model_prefix,
                       logdir,
                       opt=None,
-                      clipnorm=None,
-                      min_delta=0.0001,
-                      shuffle=True):
+                      clipnorm=None):
     """
      train_dataset, test_dataset: tf.data.Dataset iterator for train & test datasets 
      loss_type: One of ['Point','Quantile','Normal','Poisson','Negbin']
@@ -1150,31 +1148,30 @@ def SageTransformer_Train(model,
      logdir: tensorflow training logs for tensorboard
         
     """
-   
     @tf.function
     def trainstep(model, optimizer, x_train, y_train, scale, wts, training):
         with tf.GradientTape() as tape:
             o, s, f = model(x_train, training=training)
-            out_len = tf.shape(s)[1]
-            s_dim = tf.shape(scale)[-1]
+            out_len = s.shape.as_list()[1] #tf.shape(s)[1]
+            s_dim = scale.shape.as_list()[-1] #tf.shape(scale)[-1]
             if loss_type in ['Normal','Poisson','Negbin']:
                 if s_dim == 1:
                     if weighted_training:
-                        loss = loss_function(y_train*scale[:,-out_len:,:], [s, wts])
+                        loss = loss_function(y_train * scale[:, -out_len:, :], [s, wts])
                     else:
-                        loss = loss_function(y_train*scale[:,-out_len:,:], s)
+                        loss = loss_function(y_train * scale[:, -out_len:, :], s)
                 else:
-                    s_mean = scale[:,-out_len:,0:1]
-                    s_std = scale[:,-out_len:,1:2]
+                    s_mean = scale[:, -out_len:, 0:1]
+                    s_std = scale[:, -out_len:, 1:2]
                     if weighted_training:
-                        loss = loss_function(y_train*s_std + s_mean, [s, wts])
+                        loss = loss_function(y_train * s_std + s_mean, [s, wts])
                     else:
-                        loss = loss_function(y_train*s_std + s_mean, s)
-            elif loss_type in ['Point']:
-                    if weighted_training:                               
-                        loss = loss_function(y_train, [o, wts])
-                    else:
-                        loss = loss_function(y_train, o)
+                        loss = loss_function(y_train * s_std + s_mean, s)
+            elif loss_type in ['Point','Binary']:
+                if weighted_training:                               
+                    loss = loss_function(y_train, [o, wts])
+                else:
+                    loss = loss_function(y_train, o)
             elif loss_type in ['Quantile']:
                 if weighted_training:                               
                     loss = loss_function(y_train, [o, wts])
@@ -1188,57 +1185,23 @@ def SageTransformer_Train(model,
     
     @tf.function
     def teststep(model, x_test, y_test, scale, wts, training):
-        out_len = tf.shape(y_test)[1]
-        s_dim = tf.shape(scale)[-1]
-        hist_len = tf.shape(x_test)[1] - out_len
-        
-        if s_dim == 1:
-            scale_mean = scale[:,-1:,-1]
-        else:
-            scale_mean = scale[:,-1:,0]
-            scale_std = scale[:,-1:,1]
-            
-        # recursive predict
-        output = []
-        
-        for i in range(out_len):
-            o, s, f = model(x_test, training=training)
-            
-            # update target
-            if loss_type in ['Normal','Poisson','Negbin']:
-                s = s.numpy()
-                output.append(s[:,i:i+1,:])
-                infer_arr = x_test.numpy()
-                if s_dim == 1:
-                    infer_arr[:,hist_len:hist_len+i+1,target_index] = o[:,0:i+1,0]/scale_mean
-                else:
-                    infer_arr[:,hist_len:hist_len+i+1,target_index] = np.nan_to_num((o[:,0:i+1,0] - scale_mean)/scale_std)
-            
-            elif loss_type in ['Point','Quantile']:
-                o = o.numpy()
-                output.append(o[:,i:i+1,:])
-                infer_arr = x_test.numpy()
-                infer_arr[:,hist_len:hist_len+i+1,target_index] = o[:,0:i+1,0] # append q=0.5 value assuming it's the first in sequence
-
-            # feedback updated hist + fh tensor
-            x_test = tf.convert_to_tensor(np.char.decode(x_test.astype(np.bytes_), 'UTF-8'), dtype=tf.string) 
-        
-        o = tf.convert_to_tensor(np.concatenate(output, axis=1))
-        
+        o, s, f = model(x_test, training=training)
+        out_len = s.shape.as_list()[1]  # tf.shape(s)[1]
+        s_dim = scale.shape.as_list()[-1]  # tf.shape(scale)[-1]
         if loss_type in ['Normal','Poisson','Negbin']:
             if s_dim == 1:
                 if weighted_training:
-                    loss = loss_function(y_test*scale[:,-out_len:,:], [o, wts])
+                    loss = loss_function(y_test * scale[:, -out_len:, :], [s, wts])
                 else:
-                    loss = loss_function(y_test*scale[:,-out_len:,:], o)
+                    loss = loss_function(y_test * scale[:, -out_len:, :], s)
             else:
-                s_mean = scale[:,-out_len:,0:1]
-                s_std = scale[:,-out_len:,1:2]
+                s_mean = scale[:, -out_len:, 0:1]
+                s_std = scale[:, -out_len:, 1:2]
                 if weighted_training:
-                    loss = loss_function(y_test*s_std + s_mean, [o, wts])
+                    loss = loss_function(y_test * s_std + s_mean, [s, wts])
                 else:
-                    loss = loss_function(y_test*s_std + s_mean, o)
-        elif loss_type in ['Point']:
+                    loss = loss_function(y_test * s_std + s_mean, s)
+        elif loss_type in ['Point','Binary']:
             if weighted_training:                               
                 loss = loss_function(y_test, [o, wts])
             else:
@@ -1303,7 +1266,7 @@ def SageTransformer_Train(model,
     
     model_tracker_file = open(model_prefix + '_tracker.txt', mode='w', encoding='utf-8')
 
-    model_tracker_file.write('Feature Weighted ConvTransformer Training started with following Model Parameters ... \n')
+    model_tracker_file.write('SageTransformer Training started with following Model Parameters ... \n')
     model_tracker_file.write('----------------------------------------\n')
     model_tracker_file.write('num_layers ' + str(model.num_layers) + '\n')
     model_tracker_file.write('num_heads ' + str(model.num_heads) + '\n')
@@ -1323,17 +1286,6 @@ def SageTransformer_Train(model,
     
     ######################################################### train loop -- pre-filled tensor buffers
     
-    def shuffle_arrays(arrays, set_seed=-1):
-      """Shuffles arrays in-place, in the same order, along axis=0
-      arrays : List of NumPy arrays.
-      set_seed : Seed value if int >= 0, else seed is random.
-      """
-      assert all(len(arr) == len(arrays[0]) for arr in arrays)
-      seed = np.random.randint(0, 2**(32 - 1) - 1) if set_seed < 0 else set_seed
-      for arr in arrays:
-        rstate = np.random.RandomState(seed)
-        rstate.shuffle(arr)
-    
     if prefill_buffers:
       print("prefetching training samples ... ")
       # get batch size
@@ -1345,13 +1297,11 @@ def SageTransformer_Train(model,
       y_train = []
       train_scale = []
       train_wts = []
-      #num_train_batches = 0
       for step, (x_batch, y_batch, scale, wts) in enumerate(train_dataset):
         x_train.append(x_batch)
         y_train.append(y_batch)
         train_scale.append(scale)
         train_wts.append(wts)
-        #num_train_batches = num_train_batches + m.floor(batch_size/train_batch_size)
         if (step+1)*batch_size >= num_train_samples:
           break
        
@@ -1367,13 +1317,11 @@ def SageTransformer_Train(model,
       y_test = []
       test_scale = []
       test_wts = []
-      #num_test_batches = 0
       for step, (x_batch, y_batch, scale, wts) in enumerate(test_dataset):
         x_test.append(x_batch)
         y_test.append(y_batch)
         test_scale.append(scale)
         test_wts.append(wts)
-        #num_test_batches = num_test_batches + m.floor(batch_size/train_batch_size)
         if (step+1)*batch_size >= num_test_samples:
           break
 
@@ -1383,22 +1331,12 @@ def SageTransformer_Train(model,
       test_scale = tf.concat(test_scale, axis=0)
       test_wts = tf.concat(test_wts, axis=0)
       print("Test Samples Gathered: ", x_test.shape[0])
-        
+      
       num_train_batches = int(x_train.shape[0]//train_batch_size)
-      num_test_batches = int(x_test.shape[0]//test_batch_size)
+      num_test_batches = int(x_test.shape[0]//train_batch_size)
 
       for epoch in range(max_epochs):
           print("Epoch {}/{}". format(epoch, max_epochs))
-          # shuffle Training data only,if shuffle=True
-          if shuffle:
-            #shuffle_arrays([x_train, y_train, train_scale, train_wts])
-            indices = tf.range(start=0, limit=tf.shape(x_train)[0], dtype=tf.int32)
-            shuffled_indices = tf.random.shuffle(indices)
-            x_train = tf.gather(x_train, shuffled_indices)
-            y_train = tf.gather(y_train, shuffled_indices)
-            train_scale = tf.gather(train_scale, shuffled_indices)
-            train_wts = tf.gather(train_wts, shuffled_indices)
-
           for i in range(num_train_batches):
             x_batch = x_train[i*train_batch_size:(i+1)*train_batch_size]
             y_batch = y_train[i*train_batch_size:(i+1)*train_batch_size]
@@ -1412,8 +1350,8 @@ def SageTransformer_Train(model,
             elif loss_type in ['Point','Quantile']:
               train_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], train_out*scale[:,-out_len:,:])
             with train_summary_writer.as_default():
-              tf.summary.scalar('loss', train_loss_avg.result(), step=(i+1)*(epoch+1))
-              tf.summary.scalar('accuracy', train_metric.result(), step=(i+1)*(epoch+1))
+              tf.summary.scalar('loss', train_loss_avg.result(), step=epoch)
+              tf.summary.scalar('accuracy', train_metric.result(), step=epoch)
 
           for i in range(num_test_batches):
             x_batch = x_test[i*train_batch_size:(i+1)*train_batch_size]
@@ -1428,8 +1366,8 @@ def SageTransformer_Train(model,
             elif loss_type in ['Point','Quantile']:
               test_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], test_out*scale[:,-out_len:,:])
             with test_summary_writer.as_default():
-              tf.summary.scalar('loss', test_loss_avg.result(), step=(i+1)*(epoch+1))
-              tf.summary.scalar('accuracy', test_metric.result(), step=(i+1)*(epoch+1))
+              tf.summary.scalar('loss', test_loss_avg.result(), step=epoch)
+              tf.summary.scalar('accuracy', test_metric.result(), step=epoch)
 
           print("Epoch: {}, train_loss: {}, test_loss: {}, train_metric: {}, test_metric: {}".format(epoch, 
                                                                                                       train_loss_avg.result().numpy(),
@@ -1453,13 +1391,8 @@ def SageTransformer_Train(model,
           model_path = model_prefix + '_' + str(epoch) 
           model_list.append(model_path)
 
-          prev_min_loss = np.min(test_loss_results[:-1])
-          current_min_loss = np.min(test_loss_results)
-          delta = current_min_loss - prev_min_loss
-
-          print("Improvement delta (min_delta {}):  {}".format(min_delta, delta))
           # track & save best model
-          if test_loss_results[epoch]==np.min(test_loss_results) and (delta > min_delta):
+          if test_loss_results[epoch]==np.min(test_loss_results):
               best_model = model_path
               tf.keras.models.save_model(model, model_path)
               # reset time_since_improvement
@@ -1542,14 +1475,9 @@ def SageTransformer_Train(model,
           # Save Model
           model_path = model_prefix + '_' + str(epoch) 
           model_list.append(model_path)
-          
-          prev_min_loss = np.min(test_loss_results[:-1])
-          current_min_loss = np.min(test_loss_results)
-          delta = current_min_loss - prev_min_loss
-          
-          print("Improvement delta (min_delta {}):  {}".format(min_delta, delta))
+
           # track & save best model
-          if (test_loss_results[epoch]==np.min(test_loss_results)) and (delta > min_delta):
+          if test_loss_results[epoch]==np.min(test_loss_results):
               best_model = model_path
               tf.keras.models.save_model(model, model_path)
               # reset time_since_improvement
@@ -1579,18 +1507,20 @@ def SageTransformer_Train(model,
         
     return best_model
         
- 
+
         
 def SageTransformer_InferRecursive(model, inputs, loss_type, hist_len, f_len, target_index, num_quantiles):
     infer_tensor, scale, id_arr, date_arr = inputs
+
     s_dim = scale.shape[-1]
-    
+
     if s_dim == 1:
-        scale = scale[:,-1:,-1]
+        scale = scale[:, -1:, -1]
     else:
-        scale_mean = scale[:,-1:,0]
-        scale_std = scale[:,-1:,1]
-        
+        scale_mean = scale[:, -1:, 0]
+        scale_std = scale[:, -1:, 1]
+
+    #scale = scale[:,-1:,-1]  # old
     window_len = hist_len + f_len
     output = []
     stat_wts_df = None 
@@ -1602,17 +1532,18 @@ def SageTransformer_InferRecursive(model, inputs, loss_type, hist_len, f_len, ta
         # update target
         if loss_type in ['Normal','Poisson','Negbin']:
             dist = dist.numpy()
-            output.append(dist[:,i:i+1,:])
+            output.append(dist[:,i:i+1,0])
             infer_arr = infer_tensor.numpy()
+            #infer_arr[:,hist_len:hist_len+i+1,target_index] = out[:,0:i+1,0]/scale
             if s_dim == 1:
-                infer_arr[:,hist_len:hist_len+i+1,target_index] = out[:,0:i+1,0]/scale
+                infer_arr[:, hist_len:hist_len + i + 1, target_index] = out[:, 0:i + 1, 0] / scale
             else:
-                infer_arr[:,hist_len:hist_len+i+1,target_index] = np.nan_to_num((out[:,0:i+1,0] - scale_mean)/scale_std)
-        elif loss_type in ['Point','Quantile']:
+                infer_arr[:, hist_len:hist_len + i + 1, target_index] = np.nan_to_num((out[:, 0:i + 1, 0] - scale_mean) / scale_std)
+        elif loss_type in ['Point','Quantile','Binary']:
             out = out.numpy()
-            output.append(out[:,i:i+1,:])
+            output.append(out[:,i:i+1,0])
             infer_arr = infer_tensor.numpy()
-            infer_arr[:,hist_len+i:hist_len+i+1,target_index] = out[:,i:i+1,0] # feedback q=0.5 percentile
+            infer_arr[:,hist_len:hist_len+i+1,target_index] = out[:,0:i+1,0]
             
         # feedback updated hist + fh tensor
         infer_tensor = tf.convert_to_tensor(np.char.decode(infer_arr.astype(np.bytes_), 'UTF-8'), dtype=tf.string)
@@ -1626,8 +1557,7 @@ def SageTransformer_InferRecursive(model, inputs, loss_type, hist_len, f_len, ta
                 stat_columns_string.append(col.numpy().decode("utf-8")) 
             for col in decoder_columns:
                 decoder_columns_string.append(col.numpy().decode("utf-8"))
-                
-            #print(" decoder_columns_string: ",  decoder_columns_string)
+
             stat_wts, decoder_wts = wts_list
             # Average feature weights across time dim
             decoder_wts = decoder_wts.numpy()
@@ -1638,47 +1568,25 @@ def SageTransformer_InferRecursive(model, inputs, loss_type, hist_len, f_len, ta
                 stat_wts_df = pd.DataFrame(stat_wts, columns=stat_columns_string)   
             
     output_arr = np.concatenate(output, axis=1) 
-    
+        
     # rescale if necessary
     if loss_type in ['Normal','Poisson','Negbin']:
         output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr), axis=1))
-        output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0:'id','value':'forecast'})
-        output_df = output_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
-    elif loss_type in ['Point']:
-        # 
+    elif loss_type in ['Point','Quantile','Binary']:
+        #output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr*scale.reshape(-1,1)), axis=1))
+        # new
         if s_dim == 1:
-            output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr*scale.reshape(-1,1)), axis=1))
+            output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1, 1), output_arr * scale.reshape(-1, 1)), axis=1))
         else:
-            output_arr = output_arr*scale_std.reshape(-1,1) + scale_mean.reshape(-1,1)
-            output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1), output_arr), axis=1))
-        output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0:'id','value':'forecast'})
-        output_df = output_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
-            
-    elif loss_type in ['Quantile']:
-        df_list = []
-        for i in range(num_quantiles):
-            if s_dim == 1:
-                output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr[:,:,i]*scale.reshape(-1,1)), axis=1))
-                output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0:'id','value': f"forecast_{i}"})
-                output_df = output_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
-                df_list.append(output_df)
-            else:
-                output = output_arr[:,:,i]* scale_std.reshape(-1, 1) + scale_mean.reshape(-1, 1)
-                output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1, 1), output), axis=1))
-                output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0: 'id', 'value': f"forecast_{i}"})
-                output_df = output_df.rename_axis('index').sort_values(by=['id', 'index']).reset_index(drop=True)
-                df_list.append(output_df)
-        output_df = pd.concat(df_list, axis=1)
-        output_df = output_df.loc[:,~output_df.columns.duplicated()]
-            
+            output_arr = output_arr * scale_std.reshape(-1, 1) + scale_mean.reshape(-1, 1)
+            output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1, 1), output_arr), axis=1))
+    output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0:'id','value':'forecast'})
+    output_df = output_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
+        
     # merge date_columns
     date_df = pd.DataFrame(date_arr.reshape(-1,)).rename(columns={0:'period'})
     forecast_df = pd.concat([date_df, output_df], axis=1)
-    if loss_type in ['Quantile']:
-        for i in range(num_quantiles):
-            forecast_df[f"forecast_{i}"] = forecast_df[f"forecast_{i}"].astype(np.float32)
-    else:
-        forecast_df['forecast'] = forecast_df['forecast'].astype(np.float32)
+    forecast_df['forecast'] = forecast_df['forecast'].astype(np.float32)
         
     # weights df merge with id
     stat_wts_df = pd.concat([pd.DataFrame(id_arr.reshape(-1,1)), stat_wts_df], axis=1)
@@ -1738,34 +1646,31 @@ class SageModel:
               train_dataset, 
               test_dataset,
               loss_function, 
-              metric, 
-              learning_rate,
-              max_epochs, 
-              min_epochs,
-              prefill_buffers,
-              num_train_samples,
-              num_test_samples,
-              train_batch_size,
-              test_batch_size,
-              train_steps_per_epoch,
-              test_steps_per_epoch,
-              patience,
-              weighted_training,
-              model_prefix,
-              logdir,
+              metric='MSE',
+              learning_rate=0.0001,
+              max_epochs=100,
+              min_epochs=10,
+              prefill_buffers=False,
+              num_train_samples=200000,
+              num_test_samples=50000,
+              train_batch_size=64,
+              train_steps_per_epoch=200,
+              test_steps_per_epoch=100,
+              patience=10,
+              weighted_training=False,
+              model_prefix='./sage_model',
+              logdir='/tmp/sage_logs',
               load_model=None,
               opt=None,
-              clipnorm=None,
-              min_delta=0.0001,
-              shuffle=True):
-        
+              clipnorm=None):
+
         if load_model is None:
             # Initialize Weights
-            for x,y,s,w in train_dataset.take(1):
+            for x, y, s, w in train_dataset.take(1):
                 self.model(x, training=False)
         else:
             # Initialize Weights
-            for x,y,s,w in train_dataset.take(1):
+            for x, y, s, w in train_dataset.take(1):
                 self.model(x, training=False)
             saved_model = tf.keras.models.load_model(load_model)
             self.model.set_weights(saved_model.get_weights())
@@ -1774,7 +1679,6 @@ class SageModel:
             print("Saved model: {} loaded. Continuing training ...".format(load_model))
         
         best_model = SageTransformer_Train(self.model,
-                                          self.target_index,    
                                           train_dataset, 
                                           test_dataset, 
                                           self.loss_type,
@@ -1787,7 +1691,6 @@ class SageModel:
                                           num_train_samples,
                                           num_test_samples,
                                           train_batch_size,
-                                          test_batch_size,
                                           train_steps_per_epoch,
                                           test_steps_per_epoch,
                                           patience,
@@ -1795,9 +1698,7 @@ class SageModel:
                                           model_prefix,
                                           logdir,
                                           opt,
-                                          clipnorm,
-                                          min_delta,
-                                          shuffle)
+                                          clipnorm)
         return best_model
     
     def load(self, model_path):
@@ -1810,4 +1711,3 @@ class SageModel:
         return forecast, [stat_wts_df, decoder_wts_df]
     
     
-

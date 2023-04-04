@@ -853,7 +853,7 @@ class TFT_Model(tf.keras.Model):
                 cat_lookup_table = tf.lookup.StaticVocabularyTable(cat_init, 1)
                 self.stat_lookup_tables[colname] = cat_lookup_table
                 self.stat_embed_layers[colname] = tf.keras.layers.Embedding(input_dim = len(values) + 1, 
-                                                                            output_dim = emb,
+                                                                            output_dim = d_model,
                                                                             name = "embedding_layer_{}".format(colname))
         # Create temporal known cat embedding layers
         self.temporal_known_col_details = vocab_dict.get('temporal_known_cat_indices', None)
@@ -870,7 +870,7 @@ class TFT_Model(tf.keras.Model):
                 cat_lookup_table = tf.lookup.StaticVocabularyTable(cat_init, 1)
                 self.temporal_known_lookup_tables[colname] = cat_lookup_table
                 self.temporal_known_embed_layers[colname] = tf.keras.layers.Embedding(input_dim = len(values) + 1, 
-                                                                                      output_dim = emb,
+                                                                                      output_dim = d_model,
                                                                                       name = "embedding_layer_{}".format(colname))
         # Create temporal unknown cat embedding layers
         self.temporal_unknown_col_details = vocab_dict.get('temporal_unknown_cat_indices', None)
@@ -887,7 +887,7 @@ class TFT_Model(tf.keras.Model):
                 cat_lookup_table = tf.lookup.StaticVocabularyTable(cat_init, 1)
                 self.temporal_unknown_lookup_tables[colname] = cat_lookup_table
                 self.temporal_unknown_embed_layers[colname] = tf.keras.layers.Embedding(input_dim = len(values) + 1, 
-                                                                                        output_dim = emb,
+                                                                                        output_dim = d_model,
                                                                                         name = "embedding_layer_{}".format(colname))
         
         # columns names & indices
@@ -1102,6 +1102,7 @@ def TFT_Train(model,
               num_train_samples,
               num_test_samples,
               train_batch_size,
+              test_batch_size,
               train_steps_per_epoch,
               test_steps_per_epoch,
               patience,
@@ -1109,7 +1110,9 @@ def TFT_Train(model,
               model_prefix,
               logdir,
               opt=None,
-              clipnorm=None):
+              clipnorm=None,
+              min_delta=0.0001,
+              shuffle=True):
     """
      train_dataset, test_dataset: tf.data.Dataset iterator for train & test datasets 
      loss_type: One of ['Point','Quantile','Normal','Poisson','Negbin']
@@ -1319,10 +1322,20 @@ def TFT_Train(model,
         print("Test Samples Gathered: ", x_test.shape[0])
 
         num_train_batches = int(x_train.shape[0] // train_batch_size)
-        num_test_batches = int(x_test.shape[0] // train_batch_size)
+        num_test_batches = int(x_test.shape[0] // test_batch_size)
 
         for epoch in range(max_epochs):
             print("Epoch {}/{}".format(epoch, max_epochs))
+            # shuffle Training data only,if shuffle=True
+            if shuffle:
+                # shuffle_arrays([x_train, y_train, train_scale, train_wts])
+                indices = tf.range(start=0, limit=tf.shape(x_train)[0], dtype=tf.int32)
+                shuffled_indices = tf.random.shuffle(indices)
+                x_train = tf.gather(x_train, shuffled_indices)
+                y_train = tf.gather(y_train, shuffled_indices)
+                train_scale = tf.gather(train_scale, shuffled_indices)
+                train_wts = tf.gather(train_wts, shuffled_indices)
+
             for i in range(num_train_batches):
                 x_batch = x_train[i * train_batch_size:(i + 1) * train_batch_size]
                 y_batch = y_train[i * train_batch_size:(i + 1) * train_batch_size]
@@ -1379,8 +1392,13 @@ def TFT_Train(model,
             model_path = model_prefix + '_' + str(epoch)
             model_list.append(model_path)
 
+            prev_min_loss = np.min(test_loss_results[:-1])
+            current_min_loss = np.min(test_loss_results)
+            delta = current_min_loss - prev_min_loss
+
+            print("Improvement delta (min_delta {}):  {}".format(min_delta, delta))
             # track & save best model
-            if test_loss_results[epoch] == np.min(test_loss_results):
+            if test_loss_results[epoch] == np.min(test_loss_results) and (delta > min_delta):
                 best_model = model_path
                 tf.keras.models.save_model(model, model_path)
                 # reset time_since_improvement
@@ -1463,8 +1481,13 @@ def TFT_Train(model,
             model_path = model_prefix + '_' + str(epoch)
             model_list.append(model_path)
 
+            prev_min_loss = np.min(test_loss_results[:-1])
+            current_min_loss = np.min(test_loss_results)
+            delta = current_min_loss - prev_min_loss
+
+            print("Improvement delta (min_delta {}):  {}".format(min_delta, delta))
             # track & save best model
-            if test_loss_results[epoch]==np.min(test_loss_results):
+            if test_loss_results[epoch]==np.min(test_loss_results) and (delta > min_delta):
                 best_model = model_path
                 tf.keras.models.save_model(model, model_path)
                 # reset time_since_improvement
@@ -1628,7 +1651,7 @@ class Temporal_Fusion_Transformer:
                  max_inp_len,
                  loss_type,
                  num_quantiles=1,
-                 decoder_start_tokens=4,
+                 decoder_start_tokens=1,
                  dropout_rate=0.1):
         
         self.col_index_dict = col_index_dict
@@ -1670,6 +1693,7 @@ class Temporal_Fusion_Transformer:
               num_train_samples=200000,
               num_test_samples=50000,
               train_batch_size=64,
+              test_batch_size=128,
               train_steps_per_epoch=200,
               test_steps_per_epoch=100,
               patience=10,
@@ -1678,7 +1702,9 @@ class Temporal_Fusion_Transformer:
               logdir='/tmp/tft_logs',
               load_model=None,
               opt=None,
-              clipnorm=None):
+              clipnorm=None,
+              min_delta=0.0001,
+              shuffle=True):
 
         if load_model is None:
             # Initialize Weights
@@ -1707,6 +1733,7 @@ class Temporal_Fusion_Transformer:
                                num_train_samples,
                                num_test_samples,
                                train_batch_size,
+                               test_batch_size,
                                train_steps_per_epoch,
                                test_steps_per_epoch,
                                patience,
@@ -1714,7 +1741,9 @@ class Temporal_Fusion_Transformer:
                                model_prefix,
                                logdir,
                                opt,
-                               clipnorm)
+                               clipnorm,
+                               min_delta,
+                               shuffle)
         return best_model
     
     def load(self, model_path):

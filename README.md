@@ -330,6 +330,7 @@ data_obj = tft.tft_dataset(col_dict,                         # Column Groups dic
                            fh=24,                            # forecast_horizon
                            batch=64,                         # Specify larger batch size if using 'prefill_buffers=True' in model.train()
                            min_nz=1,                         # Minimum non-zero values in the historical sequence to be considered as a training sample
+                           scaling_method='standard_scaling', # scaling method for temporal numeric columns
                            interleave=1,                     # legacy. Leave as it is.
                            PARALLEL_DATA_JOBS=4,             # Used for parallelisation. Specify as per available hardware.
                            PARALLEL_DATA_JOBS_BATCHSIZE=128)
@@ -349,8 +350,8 @@ loss_fn = tft.QuantileLoss_v2(quantiles=[0.5], sample_weights=False)
 model = tft.Temporal_Fusion_Transformer(col_index_dict = col_index_dict,
                                     vocab_dict = vocab,
                                     num_layers = 1,
-                                    num_heads = 1,
-                                    d_model = 32,
+                                    num_heads = 4,
+                                    d_model = 64,
                                     forecast_horizon = 13,
                                     max_inp_len = 13,
                                     loss_type = 'Quantile',
@@ -371,6 +372,7 @@ model.train(train_dataset,             # trainset obtain from data_objec using t
             num_train_samples=200000,  # (NOT USED if prefill_buffers=False)
             num_test_samples=50000,    # (NOT USED if prefill_buffers=False)
             train_batch_size=64,       # (NOT USED if prefill_buffers=False, Batch Size specified in data object is used instead) 
+            test_batch_size=128,        # (NOT USED if prefill_buffers=False, Batch Size specified in data object is used instead) 
             train_steps_per_epoch=200, # (NOT USED if prefill_buffers=True)
             test_steps_per_epoch=100,  # (NOT USED if prefill_buffers=True)
             patience=10,               # Max epochs to train without further drop in loss value (use higher patience when prefill_buffers=False)
@@ -378,7 +380,9 @@ model.train(train_dataset,             # trainset obtain from data_objec using t
             model_prefix='./tft_model',
             logdir='/tmp/tft_logs',
             opt=None,                  # provide own optimizer object (default is Adam/Nadam)             
-            clipnorm=0.1)              # max global norm applied. Used for stable training. Default is 'None'.
+            clipnorm=0.1,              # max global norm applied. Used for stable training. Default is 'None'.
+            min_delta=0.0001,          # min decrease in val. loss to be considered an improvement 
+            shuffle=True)              # shuffle training set after each epoch
 
 mode.train returns the path of best trained model.
 
@@ -510,14 +514,14 @@ forecast_df, features = var_model.infer(infer_dataset)
 ### New in 0.1.39 - SAGE Model
 
 ````
-data_obj = sage.sage_dataset(...,scaling_method = 'mean_scaling') # Choose one of these methods ['mean_scaling','standard_scaling']
+data_obj = sage.sage_dataset(...,scaling_method = 'mean_scaling') # Choose one of these methods ['mean_scaling','standard_scaling','no_scaling']
 
 model = sage.SageModel(col_index_dict = col_index_dict,
                        vocab_dict = vocab,
-                       num_layers = 4,
+                       num_layers = 1,
                        num_heads = 4,
-                       kernel_sizes = [1,3,5],
-                       d_model = 160,
+                       kernel_sizes = [1],
+                       d_model = 64,
                        forecast_horizon = int(24),
                        max_inp_len = int(168),
                        loss_type = 'Quantile',
@@ -536,6 +540,7 @@ model.train(train_dataset,             # trainset obtain from data_objec using t
             num_train_samples=200000,  # (NOT USED if prefill_buffers=False)
             num_test_samples=50000,    # (NOT USED if prefill_buffers=False)
             train_batch_size=64,       # (NOT USED if prefill_buffers=False, Batch Size specified in data object is used instead) 
+            test_batch_size=128,       # (NOT USED if prefill_buffers=False, Batch Size specified in data object is used instead)
             train_steps_per_epoch=200, # (NOT USED if prefill_buffers=True)
             test_steps_per_epoch=100,  # (NOT USED if prefill_buffers=True)
             patience=10,               # Max epochs to train without further drop in loss value (use higher patience when prefill_buffers=False)
@@ -544,7 +549,9 @@ model.train(train_dataset,             # trainset obtain from data_objec using t
             logdir='/tmp/tft_logs',
             load_model=None,           # or, path of a previously saved model to continue training
             opt=None,                  # provide own optimizer object (default is Adam/Nadam)             
-            clipnorm=0.1)              # max global norm applied. Used for stable training. Default is 'None'.
+            clipnorm=0.1,              # max global norm applied. Used for stable training. Default is 'None'.
+            min_delta=0.0001,          # Min decrease in validation loss to consider an epoch as improvement
+            shuffle=True)              # shuffle train dataset after each epoch
 
 # Inference Steps are similar to TFT or CTFRV2 models
 

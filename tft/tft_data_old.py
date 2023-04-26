@@ -29,7 +29,7 @@ from bokeh.io import reset_output
 from bokeh.models.ranges import DataRange1d
 
 
-class sage_dataset:
+class tft_dataset:
     def __init__(self, 
                  col_dict, 
                  window_len, 

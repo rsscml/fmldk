@@ -1,8 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[ ]:
-
 
 import tensorflow as tf
 import tensorflow_probability as tfp
@@ -27,7 +25,6 @@ from bokeh.layouts import gridplot, column, row
 from bokeh.palettes import Category10, Category20, Colorblind
 from bokeh.io import reset_output
 from bokeh.models.ranges import DataRange1d
-
 
 class tft_dataset:
     def __init__(self, 
@@ -171,15 +168,22 @@ class tft_dataset:
         """
         Extract train/test samples from each sampled Id as 2-D arrays [window_len, num_columns]
         """
+        # filter out ids with insufficient timestamps (at least one datapoint should be before train cutoff period)
+        df = df.groupby(self.id_col).filter(lambda x: x[self.time_index_col].min()<self.train_till)
+
         groups = df.groupby([self.id_col])
         sampled_arr = Parallel(n_jobs=self.PARALLEL_DATA_JOBS, batch_size=self.PARALLEL_DATA_JOBS_BATCHSIZE)(delayed(self.df_sampler)(gdf, mode) for _,gdf in groups)
         arr_list = [tup[0] for tup in sampled_arr]
         pad_list = [tup[1] for tup in sampled_arr]
         scale_list = [tup[2] for tup in sampled_arr]
+        known_scale_list = [tup[3] for tup in sampled_arr]
+        unknown_scale_list = [tup[4] for tup in sampled_arr]
         arr = np.stack(arr_list, axis=0)
         pad_arr = np.stack(pad_list, axis=0)
         scale_arr = np.stack(scale_list, axis=0)
-        return arr, pad_arr, scale_arr
+        known_scale_arr = np.stack(known_scale_list, axis=0)
+        unknown_scale_arr = np.stack(unknown_scale_list, axis=0)
+        return arr, pad_arr, scale_arr, known_scale_arr, unknown_scale_arr
 
     def df_sampler(self, gdf, mode):
         """
@@ -195,21 +199,54 @@ class tft_dataset:
         scale_gdf = gdf[gdf[self.time_index_col]<=self.train_till].reset_index(drop=True)
         
         if self.scaling_method == 'mean_scaling':
-            scale = [scale_gdf[self.target_col].mean() + 1.0]
+            target_nz_count = np.maximum(np.count_nonzero(np.abs(scale_gdf[self.target_col])), 1.0)
+            target_sum = np.sum(np.abs(scale_gdf[self.target_col]))
+            scale = [np.divide(target_sum, target_nz_count) + 1.0]
+            
+            if len(self.temporal_known_num_indices) > 0:
+              known_nz_count = np.maximum(np.count_nonzero(np.abs(scale_gdf[self.temporal_known_num_col_list].values), axis=0), 1.0)
+              known_sum = np.sum(np.abs(scale_gdf[self.temporal_known_num_col_list].values), axis=0)
+              known_scale = [np.divide(known_sum, known_nz_count) + 1.0]
+            else:
+              known_scale = [1]
+
+            if len(self.temporal_unknown_num_indices) > 0:
+              unknown_nz_count = np.maximum(np.count_nonzero(np.abs(scale_gdf[self.temporal_unknown_num_col_list].values), axis=0), 1.0)
+              unknown_sum = np.sum(np.abs(scale_gdf[self.temporal_unknown_num_col_list].values), axis=0)
+              unknown_scale = [np.divide(unknown_sum, unknown_nz_count) + 1.0]
+            else:
+              unknown_scale = [1]
+
         elif self.scaling_method == 'standard_scaling':
             scale_mu = scale_gdf[self.target_col].mean()
             scale_std = np.maximum(scale_gdf[self.target_col].std(), 0.0001)
             scale = [scale_mu, scale_std]
-        elif self.scaling_method == 'no_scaling':
+
+            if len(self.temporal_known_num_indices) > 0:
+              known_mean = np.mean(scale_gdf[self.temporal_known_num_col_list].values, axis=0)
+              known_stddev = np.maximum(np.std(scale_gdf[self.temporal_known_num_col_list].values, axis=0), 0.0001)
+              known_scale = [known_mean, known_stddev]
+            else:
+              known_scale = [0, 1]
+
+            if len(self.temporal_unknown_num_indices) > 0:
+              unknown_mean = np.mean(scale_gdf[self.temporal_unknown_num_col_list].values, axis=0)
+              unknown_stddev = np.maximum(np.std(scale_gdf[self.temporal_unknown_num_col_list].values, axis=0), 0.0001)
+              unknown_scale = [unknown_mean, unknown_stddev]
+            else:
+              unknown_scale = [0, 1]
+
+        elif self.scaling_method == 'no_scaling' or self.scaling_method == 'log_scaling':
             scale = [1.0]
+            known_scale = [1.0]
+            unknown_scale = [1.0]
         
         if mode == 'train':
             gdf = gdf[gdf[self.time_index_col]<=self.train_till].reset_index(drop=True)
         elif mode == 'test':
             test_len = int(gdf[(gdf[self.time_index_col]>self.train_till) & (gdf[self.time_index_col]<=self.test_till)].groupby(self.id_col)[self.target_col].count().max())
-            test_len = test_len + (self.window_len - self.fh)
+            test_len = test_len + (self.window_len - self.fh) 
             gdf = gdf[gdf[self.time_index_col]<=self.test_till].groupby(self.id_col).apply(lambda x: x[-test_len:]).reset_index(drop=True)
-            #print("test_len: {}, test_min_ts: {}, test_max_ts: {}", test_len, gdf[self.time_index_col].min(), gdf[self.time_index_col].max())
             
         gdf = gdf.reset_index(drop=True)
         delta = len(gdf) - self.window_len
@@ -228,7 +265,7 @@ class tft_dataset:
             rand_start = random.randrange(delta)
             arr = gdf.loc[rand_start:rand_start + self.window_len - 1, self.col_list].reset_index(drop=True).values
             
-        return (arr, pad_len, scale)
+        return (arr, pad_len, scale, known_scale, unknown_scale)
     
     def df_infer_sampler(self, gdf):
         """
@@ -237,13 +274,47 @@ class tft_dataset:
         scale_gdf = gdf[gdf[self.time_index_col]<=self.train_till].reset_index(drop=True)
         
         if self.scaling_method == 'mean_scaling':
-            scale = [scale_gdf[self.target_col].mean() + 1.0]
+            target_nz_count = np.maximum(np.count_nonzero(np.abs(scale_gdf[self.target_col])), 1.0)
+            target_sum = np.sum(np.abs(scale_gdf[self.target_col]))
+            scale = [np.divide(target_sum, target_nz_count) + 1.0]
+
+            if len(self.temporal_known_num_indices) > 0:
+              known_nz_count = np.maximum(np.count_nonzero(np.abs(scale_gdf[self.temporal_known_num_col_list].values), axis=0), 1.0)
+              known_sum = np.sum(np.abs(scale_gdf[self.temporal_known_num_col_list].values), axis=0)
+              known_scale = [np.divide(known_sum, known_nz_count) + 1.0]
+            else:
+              known_scale = [1]
+
+            if len(self.temporal_unknown_num_indices) > 0:
+              unknown_nz_count = np.maximum(np.count_nonzero(np.abs(scale_gdf[self.temporal_unknown_num_col_list].values), axis=0), 1.0)
+              unknown_sum = np.sum(np.abs(scale_gdf[self.temporal_unknown_num_col_list].values), axis=0)
+              unknown_scale = [np.divide(unknown_sum, unknown_nz_count) + 1.0]
+            else:
+              unknown_scale = [1]
+
         elif self.scaling_method == 'standard_scaling':
             scale_mu = scale_gdf[self.target_col].mean()
             scale_std = np.maximum(scale_gdf[self.target_col].std(), 0.0001)
             scale = [scale_mu, scale_std]
-        elif self.scaling_method == 'no_scaling':
+
+            if len(self.temporal_known_num_indices) > 0:
+              known_mean = np.mean(scale_gdf[self.temporal_known_num_col_list].values, axis=0)
+              known_stddev = np.maximum(np.std(scale_gdf[self.temporal_known_num_col_list].values, axis=0), 0.0001)
+              known_scale = [known_mean, known_stddev]
+            else:
+              known_scale = [0, 1]
+
+            if len(self.temporal_unknown_num_indices) > 0:
+              unknown_mean = np.mean(scale_gdf[self.temporal_unknown_num_col_list].values, axis=0)
+              unknown_stddev = np.maximum(np.std(scale_gdf[self.temporal_unknown_num_col_list].values, axis=0), 0.0001)
+              unknown_scale = [unknown_mean, unknown_stddev]
+            else:
+              unknown_scale = [0, 1]
+
+        elif self.scaling_method == 'no_scaling' or self.scaling_method == 'log_scaling':
             scale = [1.0]
+            known_scale = [1.0]
+            unknown_scale = [1.0]
             
         # restrict to prediction window_len
         gdf = gdf[gdf[self.time_index_col]<=self.future_till].groupby(self.id_col).apply(lambda x: x[-self.window_len:]).reset_index(drop=True)
@@ -267,26 +338,34 @@ class tft_dataset:
             rand_start = random.randrange(delta)
             arr = gdf.loc[rand_start:rand_start + self.window_len - 1, self.col_list].reset_index(drop=True).values
             date_arr = gdf.loc[rand_start:rand_start + self.window_len - 1, self.time_index_col].reset_index(drop=True).tail(self.fh).values
-        return (arr, pad_len, date_arr, scale)
+        return (arr, pad_len, date_arr, scale, known_scale, unknown_scale)
     
     def select_all_arrs(self, data):
         """
         Use for inference dataset
         """
+        # filter out ids with insufficient timestamps (at least one datapoint should be before history cutoff period)
+        data = data.groupby(self.id_col).filter(lambda x: x[self.time_index_col].min()<self.history_till)
+
         groups = data.groupby([self.id_col])
         sampled_arr = Parallel(n_jobs=self.PARALLEL_DATA_JOBS, batch_size=self.PARALLEL_DATA_JOBS_BATCHSIZE)(delayed(self.df_infer_sampler)(gdf) for _,gdf in groups)
         arr_list = [tup[0] for tup in sampled_arr]
         pad_list = [tup[1] for tup in sampled_arr]
         date_list = [tup[2] for tup in sampled_arr]
         scale_list = [tup[3] for tup in sampled_arr]
-        
+        known_scale_list = [tup[4] for tup in sampled_arr]
+        unknown_scale_list = [tup[5] for tup in sampled_arr]
+
         arr = np.stack(arr_list, axis=0)
         pad_arr = np.stack(pad_list, axis=0)
         date_arr = np.stack(date_list, axis=0)
         scale_arr = np.stack(scale_list, axis=0)
+        known_scale_arr = np.stack(known_scale_list, axis=0)
+        unknown_scale_arr = np.stack(unknown_scale_list, axis=0)
+
         id_arr = arr[:,-1:,0]
         
-        return arr, pad_arr, id_arr, date_arr, scale_arr
+        return arr, pad_arr, id_arr, date_arr, scale_arr, known_scale_arr, unknown_scale_arr
     
     def sort_dataset(self, data):
         """
@@ -332,15 +411,18 @@ class tft_dataset:
         while True:
             sample_id = self.select_ids(keys_dict, wts_dict)
             df = data.query("{}==@sample_id".format(self.id_col))
-            arr, pad_arr, scale_arr = self.select_arrs(df, mode)
+            arr, pad_arr, scale_arr, known_scale_arr, unknown_scale_arr = self.select_arrs(df, mode)
             
             #print("data gen: ", scale_arr.shape)
             # -- done for @tf.function retracing reason. May revisit later
-            #valid_indices = np.where(np.count_nonzero(arr[:,:self.window_len-self.fh,self.target_index].astype(np.float32)>0,axis=1)>=self.min_nz)
-            #arr = arr[valid_indices]
-            #pad_arr = pad_arr[valid_indices]
-            
-            model_in, model_out, scale, weights  = self.preprocess(arr, pad_arr, scale_arr, mode)
+            valid_indices = np.where(np.count_nonzero(arr[:,:self.window_len-self.fh,self.target_index].astype(np.float32)>0,axis=1)>=self.min_nz)
+            arr = arr[valid_indices]
+            pad_arr = pad_arr[valid_indices]
+            scale_arr = scale_arr[valid_indices]
+            known_scale_arr = known_scale_arr[valid_indices]
+            unknown_scale_arr = unknown_scale_arr[valid_indices]
+
+            model_in, model_out, scale, weights  = self.preprocess(arr, pad_arr, scale_arr, known_scale_arr, unknown_scale_arr, mode)
             yield model_in.astype(str), model_out.astype(np.float32), scale.astype(np.float32), weights.astype(np.float32)
             
             
@@ -372,7 +454,7 @@ class tft_dataset:
                            
         return vocab_dict
     
-    def preprocess(self, sample_arr, pad_arr, scale_arr, mode):
+    def preprocess(self, sample_arr, pad_arr, scale_arr, known_scale_arr, unknown_scale_arr, mode):
         """
         Preprocess_samples Tensorflow Ops & outputs resp.
         """
@@ -383,24 +465,22 @@ class tft_dataset:
         target = sample_arr[..., [self.target_index]].astype(float)
         
         # target outlier correction
-        SU = np.maximum(3.0*np.quantile(target[:,:max_input_len,:], q=0.97, axis=1, keepdims=True), 0)
-        SL = np.minimum(np.quantile(target[:,:max_input_len,:], q=0.01, axis=1, keepdims=True), 0)
-        target = np.clip(target, a_min=SL, a_max=SU)
+        #SU = np.maximum(3.0*np.quantile(target[:,:max_input_len,:], q=0.97, axis=1, keepdims=True), 0)
+        #SL = np.minimum(np.quantile(target[:,:max_input_len,:], q=0.01, axis=1, keepdims=True), 0)
+        #target = np.clip(target, a_min=SL, a_max=SU)
         
         # scale target : target/target_mean
         if (self.scaling_method == 'mean_scaling') or (self.scaling_method == 'no_scaling'):
-            #target_nz_count = np.maximum(np.count_nonzero(np.abs(target[:,:max_input_len,:]), axis=1).reshape(-1,1,1), 1.0)
-            #target_sum = np.sum(np.abs(target[:,:max_input_len,:]), axis=1, keepdims=True)
-            #target_nz_mean = np.divide(target_sum, target_nz_count) + 1.0
             target_nz_mean = scale_arr.reshape(-1,1,1)
             target_scaled = np.divide(target, target_nz_mean)
         elif self.scaling_method == 'standard_scaling':
-            #target_mean = np.mean(target[:,:max_input_len,:], axis=1, keepdims=True)
-            #target_stddev = np.maximum(np.std(target[:,:max_input_len,:], axis=1, keepdims=True), 0.001)
             target_mean = scale_arr[:,0].reshape(-1,1,1)
             target_stddev = scale_arr[:,1].reshape(-1,1,1)
             target_scaled = np.divide(np.subtract(target, target_mean), target_stddev)
             target_scaled = np.nan_to_num(target_scaled) # correct where stddev is 0
+        elif self.scaling_method == 'log_scaling':
+            target_nz_mean = scale_arr.reshape(-1,1,1)
+            target_scaled = np.log1p(target)
        
         # build model_in array  
         model_in = np.concatenate((sid, target_scaled), axis=-1)
@@ -415,32 +495,25 @@ class tft_dataset:
         
         if len(self.static_num_indices) > 0:
             static_num = sample_arr[..., self.static_num_indices].astype(float)
-            # scale
-            #static_nz_count = np.maximum(np.count_nonzero(np.abs(static_num), axis=1).reshape(-1,1,len(self.static_num_indices)), 1.0)
-            #static_sum = np.sum(np.abs(static_num), axis=1, keepdims=True)
-            #static_nz_mean = np.divide(static_sum, static_nz_count) + 1.0
-            #static_num = np.divide(static_num, static_nz_mean)
-            # merge
             model_in = np.concatenate((model_in, static_num), axis=-1)
             
         if len(self.static_cat_indices) > 0:
             static_cat = sample_arr[..., self.static_cat_indices].astype(str)
-            # merge
             model_in = np.concatenate((model_in, static_cat), axis=-1)
 
         if len(self.temporal_known_num_indices) > 0:
             known_num = sample_arr[..., self.temporal_known_num_indices].astype(float)
             # scale
             if self.scaling_method == 'mean_scaling':
-                known_nz_count = np.maximum(np.count_nonzero(np.abs(known_num), axis=1).reshape(-1,1,len(self.temporal_known_num_indices)), 1.0)
-                known_sum = np.sum(np.abs(known_num), axis=1, keepdims=True)
-                known_nz_mean = np.divide(known_sum, known_nz_count) + 1.0
-                known_num = np.divide(known_num, known_nz_mean)
+                known_scale_arr = known_scale_arr.reshape(-1,1,len(self.temporal_known_num_indices))
+                known_num = np.divide(known_num, known_scale_arr)
             elif self.scaling_method == 'standard_scaling':
-                known_mean = np.mean(known_num, axis=1, keepdims=True)
-                known_stddev = np.maximum(np.std(known_num, axis=1, keepdims=True), 0.001)
+                known_mean = known_scale_arr[:,0,:].reshape(-1,1,len(self.temporal_known_num_indices))
+                known_stddev = known_scale_arr[:,1,:].reshape(-1,1,len(self.temporal_known_num_indices))
                 known_num = np.divide(np.subtract(known_num, known_mean), known_stddev)
                 known_num = np.nan_to_num(known_num)
+            elif self.scaling_method == 'log_scaling':
+                known_num = np.log1p(known_num)
             elif self.scaling_method == 'no_scaling':
                 pass
             
@@ -451,15 +524,15 @@ class tft_dataset:
             unknown_num = sample_arr[..., self.temporal_unknown_num_indices].astype(float)
             # scale
             if self.scaling_method == 'mean_scaling':
-                unknown_nz_count = np.maximum(np.count_nonzero(np.abs(unknown_num[:,:max_input_len,:]), axis=1).reshape(-1,1,len(self.temporal_unknown_num_indices)), 1.0)
-                unknown_sum = np.sum(np.abs(unknown_num[:,:max_input_len,:]), axis=1, keepdims=True)
-                unknown_nz_mean = np.divide(unknown_sum, unknown_nz_count) + 1.0
-                unknown_num = np.divide(unknown_num, unknown_nz_mean)
+                unknown_scale_arr = unknown_scale_arr.reshape(-1,1,len(self.temporal_unknown_num_indices))
+                unknown_num = np.divide(unknown_num, unknown_scale_arr)
             elif self.scaling_method == 'standard_scaling':
-                unknown_mean = np.mean(unknown_num[:,:max_input_len,:], axis=1, keepdims=True)
-                unknown_stddev = np.maximum(np.std(unknown_num[:,:max_input_len,:], axis=1, keepdims=True), 0.001)
+                unknown_mean = unknown_scale_arr[:,0,:].reshape(-1,1,len(self.temporal_unknown_num_indices))
+                unknown_stddev = unknown_scale_arr[:,1,:].reshape(-1,1,len(self.temporal_unknown_num_indices))
                 unknown_num = np.divide(np.subtract(unknown_num, unknown_mean), unknown_stddev)
                 unknown_num = np.nan_to_num(unknown_num)
+            elif self.scaling_method == 'log_scaling':
+                unknown_num = np.log1p(unknown_num)
             elif self.scaling_method == 'no_scaling':
                 pass
             
@@ -480,7 +553,7 @@ class tft_dataset:
         model_in = np.concatenate((model_in, rel_age), axis=-1) 
         
         # scale
-        if (self.scaling_method == 'mean_scaling') or (self.scaling_method == 'no_scaling'):
+        if (self.scaling_method == 'mean_scaling') or (self.scaling_method == 'no_scaling') or (self.scaling_method == 'log_scaling'):
             scale_in = np.broadcast_to(target_nz_mean, target.shape)
         elif self.scaling_method == 'standard_scaling':
             scale_mean = np.broadcast_to(target_mean, target.shape)
@@ -489,7 +562,7 @@ class tft_dataset:
             
         model_in = np.concatenate((model_in, scale_in), axis=-1)
         
-        if (self.scaling_method == 'mean_scaling') or (self.scaling_method == 'no_scaling'):
+        if (self.scaling_method == 'mean_scaling') or (self.scaling_method == 'no_scaling') or (self.scaling_method == 'log_scaling'):
             scale_out = np.broadcast_to(target_nz_mean, model_out.shape)
         elif self.scaling_method == 'standard_scaling':
             scale_mean_out = np.broadcast_to(target_mean, model_out.shape)
@@ -509,14 +582,12 @@ class tft_dataset:
         model_in = np.concatenate((model_in, mask), axis=-1)
 
         # sample weights
-        if (self.scaling_method == 'mean_scaling') or (self.scaling_method == 'no_scaling'):
+        if (self.scaling_method == 'mean_scaling') or (self.scaling_method == 'no_scaling') or (self.scaling_method == 'log_scaling'):
             weights = np.around(np.log10(np.squeeze(target_nz_mean) + 10),2) #/np.quantile(np.squeeze(target_nz_mean), q=0.8)
         elif self.scaling_method == 'standard_scaling':
             weights = np.around(np.log10(np.squeeze(target_mean) + 10),2)
         weights = np.clip(weights, a_min=1.0, a_max=2.0)
         weights = weights.reshape(-1,1)
-        #weights = np.expand_dims(weights.reshape(-1,1), axis=-1)
-        #weights = np.tile(weights, [1,sequence_len,1])
         
         return model_in, model_out, scale_out, weights
     
@@ -582,13 +653,13 @@ class tft_dataset:
         data = self.sort_dataset(data)
         #data = data[data[self.time_index_col]<=self.future_till].groupby(self.id_col).apply(lambda x: x[-self.window_len:]).reset_index(drop=True)
 
-        arr, pad_arr, id_arr, date_arr, scale_arr = self.select_all_arrs(data)
+        arr, pad_arr, id_arr, date_arr, scale_arr, known_scale_arr, unknown_scale_arr = self.select_all_arrs(data)
         
-        model_in, model_out, scale, _ = self.preprocess(arr, pad_arr, scale_arr, mode='infer')
+        model_in, model_out, scale, _ = self.preprocess(arr, pad_arr, scale_arr, known_scale_arr, unknown_scale_arr, mode='infer')
         input_tensor = tf.convert_to_tensor(model_in.astype(str), dtype=tf.string)
         
         # for evaluation
-        if (self.scaling_method == 'mean_scaling') or (self.scaling_method == 'no_scaling'):
+        if (self.scaling_method == 'mean_scaling') or (self.scaling_method == 'no_scaling') or (self.scaling_method == 'log_scaling'):
             actuals_arr = model_out*scale
         elif self.scaling_method == 'standard_scaling':
             actuals_arr = model_out*scale[:,:,1:2] + scale[:,:,0:1]
@@ -845,9 +916,6 @@ class tft_dataset:
         
         supergrid = gridplot(layouts, ncols=1)
         show(supergrid)
-
-
-# In[ ]:
 
 
 

@@ -1,8 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[ ]:
-
 
 import numpy as np
 import math as m
@@ -15,10 +13,7 @@ import absl.logging
 absl.logging.set_verbosity(absl.logging.ERROR)
 import pandas as pd
 import gc
-
-
-# In[ ]:
-
+import os
 
 # Distribution Sampling functions
 
@@ -68,9 +63,6 @@ def GumbelSample(a, b, n_samples=1):
 
 def min_power_of_2(x):
     return m.ceil(m.log2(x))
-
-
-# In[ ]:
 
 
 # Model Class - Dense Transformer w/ Variable Selection
@@ -708,9 +700,8 @@ class CausalConvResidualLayer(tf.keras.layers.Layer):
         out = self.conv_add([x,y])
         
         return out
-        
 
-# Variable Weighted Transformer Model
+# Sage Model
 
 class SageTransformer(tf.keras.Model):
     def __init__(self,
@@ -749,8 +740,10 @@ class SageTransformer(tf.keras.Model):
         
         if self.loss_fn == 'Point':
             self.final_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1))
+        elif self.loss_fn == 'Tweedie':
+            self.final_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1, activation='linear'))
         elif self.loss_fn == 'Poisson':
-            self.final_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1, activation='softplus'))
+            self.final_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1, activation='linear'))
         elif self.loss_fn == 'Quantile':
             self.proj_intrcpt = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1, activation=None))
             if self.num_quantiles > 1:
@@ -831,13 +824,10 @@ class SageTransformer(tf.keras.Model):
         
         if self.loss_fn == 'Point':
             out = self.final_layer(dec_output, training=training)
+        elif self.loss_fn == 'Tweedie':
+            out = self.final_layer(dec_output, training=training)
         elif self.loss_fn == 'Poisson':
-            if scaler == 'mean_scaler':
-                mean = self.final_layer(dec_output, training=training)*scale
-            elif scaler == 'standard_scaler':
-                mean = self.final_layer(dec_output, training=training)*scale_std + scale_mean
-            parameters = mean
-            out = poisson_sample(mu=mean)
+            out = self.final_layer(dec_output, training=training)
         elif self.loss_fn == 'Quantile':
             if self.num_quantiles > 1:
                 out = tf.math.cumsum(tf.concat([self.proj_intrcpt(dec_output, training=training), self.proj_incrmnt(dec_output, training=training)], axis=-1), axis=-1)
@@ -863,16 +853,15 @@ class SageTransformer(tf.keras.Model):
             out = negbin_sample(mean, alpha)
         else:
             raise ValueError('Invalid Loss Function.')
-        
-        #print("decoder op shape: ", dec_output.shape)
-        #print("decoder wts shape: ", decoder_weights.shape)
-        if self.loss_fn == 'Point' or self.loss_fn == 'Quantile':
+       
+        if self.loss_fn in ['Point','Quantile','Tweedie','Poisson']:
             return out, scale, static_weights, decoder_weights
         else:
             return out, parameters, static_weights, decoder_weights
 
 
-# VarTransformer Wrapper
+
+# SAGE Wrapper
 
 class SageTransformer_Model(tf.keras.Model):
     def __init__(self,
@@ -1157,7 +1146,7 @@ def SageTransformer_Train(model,
             o, s, f = model(x_train, training=training)
             out_len = tf.shape(s)[1]
             s_dim = tf.shape(scale)[-1]
-            if loss_type in ['Normal','Poisson','Negbin']:
+            if loss_type in ['Normal','Negbin']:
                 if s_dim == 1:
                     if weighted_training:
                         loss = loss_function(y_train*scale[:,-out_len:,:], [s, wts])
@@ -1170,6 +1159,19 @@ def SageTransformer_Train(model,
                         loss = loss_function(y_train*s_std + s_mean, [s, wts])
                     else:
                         loss = loss_function(y_train*s_std + s_mean, s)
+            elif loss_type in ['Tweedie','Poisson']:
+                if s_dim == 1:
+                    if weighted_training:                               
+                        loss = loss_function(y_train*scale[:,-out_len:,:], [o*scale[:,-out_len:,:], wts])
+                    else:
+                        loss = loss_function(y_train*scale[:,-out_len:,:], o*scale[:,-out_len:,:])
+                else:
+                    s_mean = scale[:,-out_len:,0:1]
+                    s_std = scale[:,-out_len:,1:2]
+                    if weighted_training:
+                        loss = loss_function(y_train*s_std + s_mean, [o*s_std + s_mean, wts])
+                    else:
+                        loss = loss_function(y_train*s_std + s_mean, o*s_std + s_mean)
             elif loss_type in ['Point']:
                     if weighted_training:                               
                         loss = loss_function(y_train, [o, wts])
@@ -1185,12 +1187,11 @@ def SageTransformer_Train(model,
         grads = tape.gradient(loss, model.trainable_variables)
         optimizer.apply_gradients((grad, var) for (grad, var) in zip(grads, model.trainable_variables) if grad is not None)
         return loss, o
-    
-    @tf.function
+
     def teststep(model, x_test, y_test, scale, wts, training):
-        out_len = tf.shape(y_test)[1]
-        s_dim = tf.shape(scale)[-1]
-        hist_len = tf.shape(x_test)[1] - out_len
+        out_len = y_test.shape.as_list()[1]
+        s_dim = scale.shape.as_list()[-1]
+        hist_len = x_test.shape.as_list()[1] - out_len
         
         if s_dim == 1:
             scale_mean = scale[:,-1:,-1]
@@ -1203,41 +1204,49 @@ def SageTransformer_Train(model,
         
         for i in range(out_len):
             o, s, f = model(x_test, training=training)
-            
+            infer_arr = x_test.numpy()
             # update target
-            if loss_type in ['Normal','Poisson','Negbin']:
-                s = s.numpy()
+            if loss_type in ['Normal','Negbin']:
                 output.append(s[:,i:i+1,:])
-                infer_arr = x_test.numpy()
                 if s_dim == 1:
-                    infer_arr[:,hist_len:hist_len+i+1,target_index] = o[:,0:i+1,0]/scale_mean
+                    infer_arr[:,hist_len+i:hist_len+i+1,target_index] = o[:,i:i+1,0]/scale_mean
                 else:
-                    infer_arr[:,hist_len:hist_len+i+1,target_index] = np.nan_to_num((o[:,0:i+1,0] - scale_mean)/scale_std)
-            
-            elif loss_type in ['Point','Quantile']:
-                o = o.numpy()
+                    infer_arr[:,hist_len+i:hist_len+i+1,target_index] = np.nan_to_num((o[:,i:i+1,0] - scale_mean)/scale_std)
+
+            elif loss_type in ['Point','Quantile','Tweedie','Poisson']:
                 output.append(o[:,i:i+1,:])
-                infer_arr = x_test.numpy()
-                infer_arr[:,hist_len:hist_len+i+1,target_index] = o[:,0:i+1,0] # append q=0.5 value assuming it's the first in sequence
+                infer_arr[:,hist_len+i:hist_len+i+1,target_index] = o[:,i:i+1,0] # append q=0.5 value assuming it's the first in sequence
 
             # feedback updated hist + fh tensor
-            x_test = tf.convert_to_tensor(np.char.decode(x_test.astype(np.bytes_), 'UTF-8'), dtype=tf.string) 
+            x_test = tf.convert_to_tensor(np.char.decode(infer_arr.astype(np.bytes_), 'UTF-8'), dtype=tf.string) 
         
-        o = tf.convert_to_tensor(np.concatenate(output, axis=1))
-        
-        if loss_type in ['Normal','Poisson','Negbin']:
+        o = tf.concat(output, axis=1)
+        if loss_type in ['Normal','Negbin']:
             if s_dim == 1:
                 if weighted_training:
-                    loss = loss_function(y_test*scale[:,-out_len:,:], [o, wts])
+                    loss = loss_function(y_test*scale[:,-out_len:,:], [s, wts])
                 else:
-                    loss = loss_function(y_test*scale[:,-out_len:,:], o)
+                    loss = loss_function(y_test*scale[:,-out_len:,:], s)
             else:
                 s_mean = scale[:,-out_len:,0:1]
                 s_std = scale[:,-out_len:,1:2]
                 if weighted_training:
-                    loss = loss_function(y_test*s_std + s_mean, [o, wts])
+                    loss = loss_function(y_test*s_std + s_mean, [s, wts])
                 else:
-                    loss = loss_function(y_test*s_std + s_mean, o)
+                    loss = loss_function(y_test*s_std + s_mean, s)
+        elif loss_type in ['Tweedie','Poisson']:
+            if s_dim == 1:
+                if weighted_training:                               
+                    loss = loss_function(y_test*scale[:,-out_len:,:], [o*scale[:,-out_len:,:], wts])
+                else:
+                    loss = loss_function(y_test*scale[:,-out_len:,:], o*scale[:,-out_len:,:])
+            else:
+                s_mean = scale[:,-out_len:,0:1]
+                s_std = scale[:,-out_len:,1:2]
+                if weighted_training:
+                    loss = loss_function(y_test*s_std + s_mean, [o*s_std + s_mean, wts])
+                else:
+                    loss = loss_function(y_test*s_std + s_mean, o*s_std + s_mean)
         elif loss_type in ['Point']:
             if weighted_training:                               
                 loss = loss_function(y_test, [o, wts])
@@ -1407,10 +1416,12 @@ def SageTransformer_Train(model,
             train_loss, train_out = trainstep(model, optimizer, x_batch, y_batch, scale, wts, training=True)
             out_len = tf.shape(train_out)[1]
             train_loss_avg.update_state(train_loss)
-            if loss_type in ['Normal','Poisson','Negbin']:
+            if loss_type in ['Normal','Negbin']:
               train_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], train_out)
-            elif loss_type in ['Point','Quantile']:
+            elif loss_type in ['Point','Tweedie','Poisson']:
               train_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], train_out*scale[:,-out_len:,:])
+            elif loss_type in ['Quantile']:
+              train_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], train_out[:,-out_len:,0:1]*scale[:,-out_len:,:])
             with train_summary_writer.as_default():
               tf.summary.scalar('loss', train_loss_avg.result(), step=(i+1)*(epoch+1))
               tf.summary.scalar('accuracy', train_metric.result(), step=(i+1)*(epoch+1))
@@ -1423,10 +1434,12 @@ def SageTransformer_Train(model,
             test_loss, test_out = trainstep(model, optimizer, x_batch, y_batch, scale, wts, training=False)
             out_len = tf.shape(test_out)[1]
             test_loss_avg.update_state(test_loss)
-            if loss_type in ['Normal','Poisson','Negbin']:
+            if loss_type in ['Normal','Negbin']:
               test_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], test_out)
-            elif loss_type in ['Point','Quantile']:
+            elif loss_type in ['Point','Tweedie','Poisson']:
               test_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], test_out*scale[:,-out_len:,:])
+            elif loss_type in ['Quantile']:
+              test_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], test_out[:,-out_len:,0:1]*scale[:,-out_len:,:])
             with test_summary_writer.as_default():
               tf.summary.scalar('loss', test_loss_avg.result(), step=(i+1)*(epoch+1))
               tf.summary.scalar('accuracy', test_metric.result(), step=(i+1)*(epoch+1))
@@ -1452,14 +1465,17 @@ def SageTransformer_Train(model,
           # Save Model
           model_path = model_prefix + '_' + str(epoch) 
           model_list.append(model_path)
-
-          prev_min_loss = np.min(test_loss_results[:-1])
+          
+          if epoch == 0:
+            prev_min_loss = np.min(test_loss_results)
+          else:
+            prev_min_loss = np.min(test_loss_results[:-1])
           current_min_loss = np.min(test_loss_results)
           delta = current_min_loss - prev_min_loss
 
           print("Improvement delta (min_delta {}):  {}".format(min_delta, delta))
           # track & save best model
-          if test_loss_results[epoch]==np.min(test_loss_results) and (delta > min_delta):
+          if ((test_loss_results[epoch]==np.min(test_loss_results)) and (-delta > min_delta)) or (epoch == 0):
               best_model = model_path
               tf.keras.models.save_model(model, model_path)
               # reset time_since_improvement
@@ -1498,13 +1514,15 @@ def SageTransformer_Train(model,
                   train_loss, train_out = trainstep(model, optimizer, x_batch, y_batch, scale, wts, training=True)
                   out_len = tf.shape(train_out)[1]
                   train_loss_avg.update_state(train_loss)
-                  if loss_type in ['Normal','Poisson','Negbin']:
+                  if loss_type in ['Normal','Negbin']:
                       train_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], train_out)
-                  elif loss_type in ['Point','Quantile']:
+                  elif loss_type in ['Point','Tweedie','Poisson']:
                       train_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], train_out*scale[:,-out_len:,:])
+                  elif loss_type in ['Quantile']:
+                      train_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], train_out[:,-out_len:,0:1]*scale[:,-out_len:,:])
                   with train_summary_writer.as_default():
-                      tf.summary.scalar('loss', train_loss_avg.result(), step=epoch)
-                      tf.summary.scalar('accuracy', train_metric.result(), step=epoch)
+                      tf.summary.scalar('loss', train_loss_avg.result(), step=(step+1)*(epoch+1))
+                      tf.summary.scalar('accuracy', train_metric.result(), step=(step+1)*(epoch+1))
 
           for step, (x_batch, y_batch, scale, wts) in enumerate(test_dataset):
               if step > test_steps_per_epoch:
@@ -1513,13 +1531,15 @@ def SageTransformer_Train(model,
                   test_loss, test_out = teststep(model, x_batch, y_batch, scale, wts, training=False)
                   out_len = tf.shape(test_out)[1]
                   test_loss_avg.update_state(test_loss)
-                  if loss_type in ['Normal','Poisson','Negbin']:
+                  if loss_type in ['Normal','Negbin']:
                       test_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], test_out)
-                  elif loss_type in ['Point','Quantile']:
+                  elif loss_type in ['Point','Tweedie','Poisson']:
                       test_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], test_out*scale[:,-out_len:,:])
+                  elif loss_type in ['Quantile']:
+                      test_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], test_out[:,-out_len:,0:1]*scale[:,-out_len:,:])
                   with test_summary_writer.as_default():
-                      tf.summary.scalar('loss', test_loss_avg.result(), step=epoch)
-                      tf.summary.scalar('accuracy', test_metric.result(), step=epoch)
+                      tf.summary.scalar('loss', test_loss_avg.result(), step=(step+1)*(epoch+1))
+                      tf.summary.scalar('accuracy', test_metric.result(), step=(step+1)*(epoch+1))
 
           print("Epoch: {}, train_loss: {}, test_loss: {}, train_metric: {}, test_metric: {}".format(epoch, 
                                                                                                       train_loss_avg.result().numpy(),
@@ -1543,13 +1563,16 @@ def SageTransformer_Train(model,
           model_path = model_prefix + '_' + str(epoch) 
           model_list.append(model_path)
           
-          prev_min_loss = np.min(test_loss_results[:-1])
+          if epoch == 0:
+            prev_min_loss = np.min(test_loss_results)
+          else:
+            prev_min_loss = np.min(test_loss_results[:-1])
           current_min_loss = np.min(test_loss_results)
           delta = current_min_loss - prev_min_loss
-          
+         
           print("Improvement delta (min_delta {}):  {}".format(min_delta, delta))
           # track & save best model
-          if (test_loss_results[epoch]==np.min(test_loss_results)) and (delta > min_delta):
+          if ((test_loss_results[epoch]==np.min(test_loss_results)) and (-delta > min_delta)) or (epoch == 0):
               best_model = model_path
               tf.keras.models.save_model(model, model_path)
               # reset time_since_improvement
@@ -1600,15 +1623,15 @@ def SageTransformer_InferRecursive(model, inputs, loss_type, hist_len, f_len, ta
         out, dist, feature_wts = model(infer_tensor, training=False)
             
         # update target
-        if loss_type in ['Normal','Poisson','Negbin']:
+        if loss_type in ['Normal','Negbin']:
             dist = dist.numpy()
-            output.append(dist[:,i:i+1,:])
+            output.append(out[:,i:i+1,0])
             infer_arr = infer_tensor.numpy()
             if s_dim == 1:
-                infer_arr[:,hist_len:hist_len+i+1,target_index] = out[:,0:i+1,0]/scale
+                infer_arr[:,hist_len+i:hist_len+i+1,target_index] = out[:,i:i+1,0]/scale
             else:
-                infer_arr[:,hist_len:hist_len+i+1,target_index] = np.nan_to_num((out[:,0:i+1,0] - scale_mean)/scale_std)
-        elif loss_type in ['Point','Quantile']:
+                infer_arr[:,hist_len+i:hist_len+i+1,target_index] = np.nan_to_num((out[:,i:i+1,0] - scale_mean)/scale_std)
+        elif loss_type in ['Point','Quantile','Tweedie','Poisson']:
             out = out.numpy()
             output.append(out[:,i:i+1,:])
             infer_arr = infer_tensor.numpy()
@@ -1638,22 +1661,20 @@ def SageTransformer_InferRecursive(model, inputs, loss_type, hist_len, f_len, ta
                 stat_wts_df = pd.DataFrame(stat_wts, columns=stat_columns_string)   
             
     output_arr = np.concatenate(output, axis=1) 
-    
+        
     # rescale if necessary
-    if loss_type in ['Normal','Poisson','Negbin']:
+    if loss_type in ['Normal','Negbin']:
         output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr), axis=1))
         output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0:'id','value':'forecast'})
         output_df = output_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
-    elif loss_type in ['Point']:
-        # 
+    elif loss_type in ['Point','Tweedie','Poisson']:
         if s_dim == 1:
-            output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr*scale.reshape(-1,1)), axis=1))
+            output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr[:,:,0]*scale.reshape(-1,1)), axis=1))
         else:
-            output_arr = output_arr*scale_std.reshape(-1,1) + scale_mean.reshape(-1,1)
+            output_arr = output_arr[:,:,0]*scale_std.reshape(-1,1) + scale_mean.reshape(-1,1)
             output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1), output_arr), axis=1))
         output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0:'id','value':'forecast'})
         output_df = output_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
-            
     elif loss_type in ['Quantile']:
         df_list = []
         for i in range(num_quantiles):
@@ -1693,6 +1714,8 @@ def SageTransformer_InferRecursive(model, inputs, loss_type, hist_len, f_len, ta
     return forecast_df, stat_wts_df, decoder_wts_df
 
 
+
+
 class SageModel:
     def __init__(self, 
                  col_index_dict,
@@ -1705,7 +1728,9 @@ class SageModel:
                  max_inp_len,
                  loss_type,
                  num_quantiles,
-                 dropout_rate=0.1):
+                 dropout_rate=0.1,
+                 seed=None,
+                 deterministic_ops=False):
         
         self.col_index_dict = col_index_dict
         self.vocab_dict = vocab_dict
@@ -1719,9 +1744,24 @@ class SageModel:
         self.num_quantiles = num_quantiles
         self.dropout_rate = dropout_rate
         self.target_col_name, self.target_index = self.col_index_dict.get('target_index')
+        self.seed = seed
+        self.allow_deterministic_ops = deterministic_ops
     
+    def set_seed(self):
+        tf.keras.utils.set_random_seed(self.seed)
+        if self.allow_deterministic_ops:
+            print("Deterministic Ops enabled.")
+            os.environ["TF_DETERMINISTIC_OPS"] = "True"
+            os.environ["TF_DISABLE_SEGMENT_REDUCTION_OP_DETERMINISM_EXCEPTIONS"] = "True"
+        
     def build(self):
         tf.keras.backend.clear_session()
+        if self.seed is None:
+            print("No seed set for deterministic weights initialization")
+        else:
+            print("Using seed {} for weights initialization".format(self.seed))
+            self.set_seed()
+            
         self.model = SageTransformer_Model(self.col_index_dict,
                                   self.vocab_dict,
                                   self.num_layers,

@@ -15,6 +15,7 @@ import absl.logging
 absl.logging.set_verbosity(absl.logging.ERROR)
 import pandas as pd
 import gc
+import os
 
 # Distribution Sampling functions
 
@@ -636,19 +637,20 @@ class TFT(tf.keras.Model):
                                             dropout_rate=dropout_rate)
 
         if self.loss_fn == 'Point':
-            self.final_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=num_quantiles, activation=None))
+            self.final_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1, activation='linear'))
+        elif self.loss_fn == 'Tweedie':
+            self.final_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1, activation='linear'))
         elif self.loss_fn == 'Binary':
             self.final_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1, activation='sigmoid'))
         elif self.loss_fn == 'Poisson':
-            self.final_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1, activation='softplus'))
+            self.final_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1, activation='linear'))
         elif self.loss_fn == 'Quantile':
             if self.is_iqf:
                 self.proj_intrcpt = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1, activation=None))
                 if self.num_quantiles > 1:
                     self.proj_incrmnt = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=self.num_quantiles-1, activation='softplus'))
             else:
-                self.quantile_layers = [tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1, activation=None)) 
-                                        for _ in range(num_quantiles)]
+                self.quantile_layers = [tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1, activation=None)) for _ in range(num_quantiles)]
         elif self.loss_fn == 'Normal':
             self.m_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1))
             self.s_layer = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=1, activation='softplus'))
@@ -740,14 +742,10 @@ class TFT(tf.keras.Model):
             out = self.final_layer(attn_out, training=training)
         elif self.loss_fn == 'Binary':
             out = self.final_layer(attn_out, training=training)
+        elif self.loss_fn == 'Tweedie':
+            out = self.final_layer(attn_out, training=training)
         elif self.loss_fn == 'Poisson':
-            if scaler == 'mean_scaler':
-                mean = self.final_layer(attn_out, training=training) * scale
-            elif scaler == 'standard_scaler':
-                mean = self.final_layer(attn_out, training=training) * scale_std + scale_mean
-            #mean = self.final_layer(attn_out, training=training)*scale
-            parameters = mean
-            out = poisson_sample(mu=mean)
+            out = self.final_layer(attn_out, training=training)
         elif self.loss_fn == 'Normal':
             if scaler == 'mean_scaler':
                 mean = self.m_layer(attn_out, training=training) * scale  # (batch, f_len, 1)
@@ -783,7 +781,7 @@ class TFT(tf.keras.Model):
                     output.append(out)
                 out = tf.concat(output, axis=-1)
 
-        if self.loss_fn == 'Point' or self.loss_fn == 'Binary' or self.loss_fn == 'Quantile':
+        if self.loss_fn in ['Point','Quantile','Tweedie','Poisson']:
             return out, scale, stat_weights, past_weights, future_weights
         else:
             return out, parameters, stat_weights, past_weights, future_weights
@@ -1132,13 +1130,7 @@ def TFT_Train(model,
             o, s, f = model(x_train, training=training)
             out_len = s.shape.as_list()[1]  # tf.shape(s)[1]
             s_dim = scale.shape.as_list()[-1]  # tf.shape(scale)[-1]
-            if loss_type in ['Normal','Poisson','Negbin']:
-                '''
-                if weighted_training:
-                    loss = loss_function(y_train*scale[:,-out_len:,:], [s, wts])
-                else:
-                    loss = loss_function(y_train*scale[:,-out_len:,:], s)
-                '''
+            if loss_type in ['Normal', 'Negbin']:
                 if s_dim == 1:
                     if weighted_training:
                         loss = loss_function(y_train * scale[:, -out_len:, :], [s, wts])
@@ -1151,7 +1143,20 @@ def TFT_Train(model,
                         loss = loss_function(y_train * s_std + s_mean, [s, wts])
                     else:
                         loss = loss_function(y_train * s_std + s_mean, s)
-            elif loss_type in ['Point','Binary']:
+            elif loss_type in ['Tweedie', 'Poisson']:
+                if s_dim == 1:
+                    if weighted_training:
+                        loss = loss_function(y_train*scale[:, -out_len:, :], [o*scale[:, -out_len:, :], wts])
+                    else:
+                        loss = loss_function(y_train*scale[:, -out_len:, :], o*scale[:, -out_len:, :])
+                else:
+                    s_mean = scale[:, -out_len:, 0:1]
+                    s_std = scale[:, -out_len:, 1:2]
+                    if weighted_training:
+                        loss = loss_function(y_train*s_std + s_mean, [o*s_std + s_mean, wts])
+                    else:
+                        loss = loss_function(y_train*s_std + s_mean, o*s_std + s_mean)
+            elif loss_type in ['Point', 'Binary']:
                 if weighted_training:                               
                     loss = loss_function(y_train, [o, wts])
                 else:
@@ -1172,13 +1177,7 @@ def TFT_Train(model,
         o, s, f = model(x_test, training=training)
         out_len = s.shape.as_list()[1]  # tf.shape(s)[1]
         s_dim = scale.shape.as_list()[-1]  # tf.shape(scale)[-1]
-        if loss_type in ['Normal','Poisson','Negbin']:
-            '''
-            if weighted_training:
-                loss = loss_function(y_test*scale[:,-out_len:,:], [s, wts])
-            else:
-                loss = loss_function(y_test*scale[:,-out_len:,:], s)    
-            '''
+        if loss_type in ['Normal', 'Negbin']:
             if s_dim == 1:
                 if weighted_training:
                     loss = loss_function(y_test * scale[:, -out_len:, :], [s, wts])
@@ -1191,11 +1190,27 @@ def TFT_Train(model,
                     loss = loss_function(y_test * s_std + s_mean, [s, wts])
                 else:
                     loss = loss_function(y_test * s_std + s_mean, s)
-        elif loss_type in ['Point','Binary']:
+
+        elif loss_type in ['Tweedie', 'Poisson']:
+            if s_dim == 1:
+                if weighted_training:
+                    loss = loss_function(y_test*scale[:, -out_len:, :], [o*scale[:, -out_len:, :], wts])
+                else:
+                    loss = loss_function(y_test*scale[:, -out_len:, :], o*scale[:, -out_len:, :])
+            else:
+                s_mean = scale[:, -out_len:, 0:1]
+                s_std = scale[:, -out_len:, 1:2]
+                if weighted_training:
+                    loss = loss_function(y_test*s_std + s_mean, [o*s_std + s_mean, wts])
+                else:
+                    loss = loss_function(y_test*s_std + s_mean, o*s_std + s_mean)
+
+        elif loss_type in ['Point', 'Binary']:
             if weighted_training:                               
                 loss = loss_function(y_test, [o, wts])
             else:
                 loss = loss_function(y_test, o)
+
         elif loss_type in ['Quantile']:
             if weighted_training:                               
                 loss = loss_function(y_test, [o, wts])
@@ -1344,11 +1359,12 @@ def TFT_Train(model,
                 train_loss, train_out = trainstep(model, optimizer, x_batch, y_batch, scale, wts, training=True)
                 out_len = tf.shape(train_out)[1]
                 train_loss_avg.update_state(train_loss)
-                if loss_type in ['Normal', 'Poisson', 'Negbin']:
+                if loss_type in ['Normal', 'Negbin']:
                     train_metric.update_state(y_batch[:, -out_len:, :] * scale[:, -out_len:, :], train_out)
-                elif loss_type in ['Point', 'Quantile']:
-                    train_metric.update_state(y_batch[:, -out_len:, :] * scale[:, -out_len:, :],
-                                              train_out * scale[:, -out_len:, :])
+                elif loss_type in ['Point', 'Poisson', 'Tweedie']:
+                    train_metric.update_state(y_batch[:, -out_len:, :] * scale[:, -out_len:, :], train_out * scale[:, -out_len:, :])
+                elif loss_type in ['Quantile']:
+                    train_metric.update_state(y_batch[:, -out_len:, :] * scale[:, -out_len:, :], train_out[:, -out_len:, 0:1] * scale[:, -out_len:, :])
                 with train_summary_writer.as_default():
                     tf.summary.scalar('loss', train_loss_avg.result(), step=epoch)
                     tf.summary.scalar('accuracy', train_metric.result(), step=epoch)
@@ -1361,11 +1377,12 @@ def TFT_Train(model,
                 test_loss, test_out = trainstep(model, optimizer, x_batch, y_batch, scale, wts, training=False)
                 out_len = tf.shape(test_out)[1]
                 test_loss_avg.update_state(test_loss)
-                if loss_type in ['Normal', 'Poisson', 'Negbin']:
+                if loss_type in ['Normal', 'Negbin']:
                     test_metric.update_state(y_batch[:, -out_len:, :] * scale[:, -out_len:, :], test_out)
-                elif loss_type in ['Point', 'Quantile']:
-                    test_metric.update_state(y_batch[:, -out_len:, :] * scale[:, -out_len:, :],
-                                             test_out * scale[:, -out_len:, :])
+                elif loss_type in ['Point', 'Tweedie', 'Poisson']:
+                    test_metric.update_state(y_batch[:, -out_len:, :] * scale[:, -out_len:, :], test_out * scale[:, -out_len:, :])
+                elif loss_type in ['Quantile']:
+                    test_metric.update_state(y_batch[:, -out_len:, :] * scale[:, -out_len:, :], test_out[:, -out_len:, 0:1] * scale[:, -out_len:, :])
                 with test_summary_writer.as_default():
                     tf.summary.scalar('loss', test_loss_avg.result(), step=epoch)
                     tf.summary.scalar('accuracy', test_metric.result(), step=epoch)
@@ -1392,13 +1409,16 @@ def TFT_Train(model,
             model_path = model_prefix + '_' + str(epoch)
             model_list.append(model_path)
 
-            prev_min_loss = np.min(test_loss_results[:-1])
+            if epoch == 0:
+                prev_min_loss = np.min(test_loss_results)
+            else:
+                prev_min_loss = np.min(test_loss_results[:-1])
             current_min_loss = np.min(test_loss_results)
             delta = current_min_loss - prev_min_loss
 
             print("Improvement delta (min_delta {}):  {}".format(min_delta, delta))
             # track & save best model
-            if test_loss_results[epoch] == np.min(test_loss_results) and (delta > min_delta):
+            if ((test_loss_results[epoch] == np.min(test_loss_results)) and (-delta > min_delta)) or (epoch == 0):
                 best_model = model_path
                 tf.keras.models.save_model(model, model_path)
                 # reset time_since_improvement
@@ -1436,10 +1456,12 @@ def TFT_Train(model,
                     train_loss, train_out = trainstep(model, optimizer, x_batch, y_batch, scale, wts, training=True)
                     out_len = tf.shape(train_out)[1]
                     train_loss_avg.update_state(train_loss)
-                    if loss_type in ['Normal','Poisson','Negbin']:
+                    if loss_type in ['Normal', 'Negbin']:
                         train_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], train_out)
-                    elif loss_type in ['Point','Quantile']:
-                        train_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], train_out*scale[:,-out_len:,:])
+                    elif loss_type in ['Point', 'Tweedie', 'Poisson']:
+                        train_metric.update_state(y_batch[:, -out_len:, :] * scale[:, -out_len:, :], train_out * scale[:, -out_len:, :])
+                    elif loss_type in ['Quantile']:
+                        train_metric.update_state(y_batch[:, -out_len:, :] * scale[:, -out_len:, :], train_out[:, -out_len:, 0:1] * scale[:, -out_len:, :])
                     with train_summary_writer.as_default():
                         tf.summary.scalar('loss', train_loss_avg.result(), step=epoch)
                         tf.summary.scalar('accuracy', train_metric.result(), step=epoch)
@@ -1451,10 +1473,12 @@ def TFT_Train(model,
                     test_loss, test_out = teststep(model, x_batch, y_batch, scale, wts, training=False)
                     out_len = tf.shape(test_out)[1]
                     test_loss_avg.update_state(test_loss)
-                    if loss_type in ['Normal','Poisson','Negbin']:
+                    if loss_type in ['Normal', 'Negbin']:
                         test_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], test_out)
-                    elif loss_type in ['Point','Quantile']:
-                        test_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], test_out*scale[:,-out_len:,:])
+                    elif loss_type in ['Point', 'Tweedie', 'Poisson']:
+                        test_metric.update_state(y_batch[:, -out_len:, :] * scale[:, -out_len:, :], test_out * scale[:, -out_len:, :])
+                    elif loss_type in ['Quantile']:
+                        test_metric.update_state(y_batch[:, -out_len:, :] * scale[:, -out_len:, :], test_out[:, -out_len:, 0:1] * scale[:, -out_len:, :])
                     with test_summary_writer.as_default():
                         tf.summary.scalar('loss', test_loss_avg.result(), step=epoch)
                         tf.summary.scalar('accuracy', test_metric.result(), step=epoch)
@@ -1481,13 +1505,16 @@ def TFT_Train(model,
             model_path = model_prefix + '_' + str(epoch)
             model_list.append(model_path)
 
-            prev_min_loss = np.min(test_loss_results[:-1])
+            if epoch == 0:
+                prev_min_loss = np.min(test_loss_results)
+            else:
+                prev_min_loss = np.min(test_loss_results[:-1])
             current_min_loss = np.min(test_loss_results)
             delta = current_min_loss - prev_min_loss
 
             print("Improvement delta (min_delta {}):  {}".format(min_delta, delta))
             # track & save best model
-            if test_loss_results[epoch]==np.min(test_loss_results) and (delta > min_delta):
+            if ((test_loss_results[epoch] == np.min(test_loss_results)) and (-delta > min_delta)) or (epoch == 0):
                 best_model = model_path
                 tf.keras.models.save_model(model, model_path)
                 # reset time_since_improvement
@@ -1536,11 +1563,11 @@ def TFT_Infer(model, inputs, loss_type, hist_len, f_len, target_index, num_quant
         
     out, dist, feature_wts = model(infer_tensor, training=False)
             
-    if loss_type in ['Normal','Poisson','Negbin']:
+    if loss_type in ['Normal','Negbin']:
         dist = dist.numpy()
         output_arr = dist[:,:,0]
         
-    elif loss_type in ['Point','Binary']:
+    elif loss_type in ['Point','Binary','Poisson','Tweedie']:
         out = out.numpy()
         output_arr = out[:,:,0]
     
@@ -1574,14 +1601,12 @@ def TFT_Infer(model, inputs, loss_type, hist_len, f_len, target_index, num_quant
         stat_wts_df = pd.DataFrame(stat_wts, columns=stat_columns_string)   
             
     # rescale if necessary
-    if loss_type in ['Normal','Poisson','Negbin']:
+    if loss_type in ['Normal', 'Negbin']:
         output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr), axis=1))
         output_df = output_df.melt(id_vars=0).sort_values(0).drop(columns=['variable']).rename(columns={0:'id','value':'forecast'})
         output_df = output_df.rename_axis('index').sort_values(by=['id','index']).reset_index(drop=True)
         
-    elif loss_type in ['Point','Binary']:
-
-        #output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1,1),output_arr*scale.reshape(-1,1)), axis=1))
+    elif loss_type in ['Point', 'Binary', 'Poisson', 'Tweedie']:
         if s_dim == 1:
             output_df = pd.DataFrame(np.concatenate((id_arr.reshape(-1, 1), output_arr * scale.reshape(-1, 1)), axis=1))
         else:
@@ -1652,7 +1677,9 @@ class Temporal_Fusion_Transformer:
                  loss_type,
                  num_quantiles=1,
                  decoder_start_tokens=1,
-                 dropout_rate=0.1):
+                 dropout_rate=0.1,
+                 seed=None,
+                 deterministic_ops=False):
         
         self.col_index_dict = col_index_dict
         self.vocab_dict = vocab_dict
@@ -1666,9 +1693,24 @@ class Temporal_Fusion_Transformer:
         self.dropout_rate = dropout_rate
         self.decoder_start_tokens = decoder_start_tokens
         self.target_col_name, self.target_index = self.col_index_dict.get('target_index')
-    
+        self.seed = seed
+        self.allow_deterministic_ops = deterministic_ops
+
+    def set_seed(self):
+        tf.keras.utils.set_random_seed(self.seed)
+        if self.allow_deterministic_ops:
+            print("Deterministic Ops enabled.")
+            os.environ["TF_DETERMINISTIC_OPS"] = "True"
+            os.environ["TF_DISABLE_SEGMENT_REDUCTION_OP_DETERMINISM_EXCEPTIONS"] = "True"
+
     def build(self):
         tf.keras.backend.clear_session()
+        if self.seed is None:
+            print("No seed set for deterministic weights initialization")
+        else:
+            print("Using seed {} for weights initialization".format(self.seed))
+            self.set_seed()
+
         self.model = TFT_Model(self.col_index_dict,
                                   self.vocab_dict,
                                   self.num_layers,

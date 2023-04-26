@@ -11,7 +11,7 @@ import pickle
 import absl.logging
 absl.logging.set_verbosity(absl.logging.ERROR)
 import pandas as pd
-
+import os
 
 # Distribution Sampling functions
 
@@ -1691,8 +1691,10 @@ class Feature_Weighted_ConvTransformer:
                  max_inp_len,
                  loss_type,
                  num_quantiles,
-                 decoder_lags='Default',
-                 dropout_rate=0.1):
+                 decoder_lags=1,
+                 dropout_rate=0.1,
+                 seed=None,
+                 deterministic_ops=False):
         
         self.col_index_dict = col_index_dict
         self.vocab_dict = vocab_dict
@@ -1707,9 +1709,24 @@ class Feature_Weighted_ConvTransformer:
         self.decoder_lags = decoder_lags
         self.dropout_rate = dropout_rate
         self.target_col_name, self.target_index = self.col_index_dict.get('target_index')
-    
+        self.seed = seed
+        self.allow_deterministic_ops = deterministic_ops
+
+    def set_seed(self):
+        tf.keras.utils.set_random_seed(self.seed)
+        if self.allow_deterministic_ops:
+            print("Deterministic Ops enabled.")
+            os.environ["TF_DETERMINISTIC_OPS"] = "True"
+            os.environ["TF_DISABLE_SEGMENT_REDUCTION_OP_DETERMINISM_EXCEPTIONS"] = "True"
+
     def build(self):
         tf.keras.backend.clear_session()
+        if self.seed is None:
+            print("No seed set for deterministic weights initialization")
+        else:
+            print("Using seed {} for weights initialization".format(self.seed))
+            self.set_seed()
+
         self.model = ConvVarTransformer_Model(self.col_index_dict,
                                   self.vocab_dict,
                                   self.num_layers,

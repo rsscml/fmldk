@@ -1,8 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
-
 
 import numpy as np
 import math as m
@@ -10,9 +8,6 @@ import tensorflow as tf
 import tensorflow_probability as tfp
 tfd = tfp.distributions
 import pprint
-
-
-# In[2]:
 
 
 # NLL Functions
@@ -31,7 +26,8 @@ def Negbin_loss(actual, mu, alpha):
     minimize loss = - log l_{nb}
     Note: torch.lgamma: log Gamma function
     '''
-    likelihood = tf.math.lgamma(actual + 1.0/alpha) - tf.math.lgamma(actual + 1) - tf.math.lgamma(1.0/alpha)                 - 1.0/alpha*tf.math.log(1 + alpha*mu) + actual*tf.math.log(alpha*mu/(1 + alpha * mu))
+    likelihood = tf.math.lgamma(actual + 1.0/alpha) - tf.math.lgamma(actual + 1) - tf.math.lgamma(1.0/alpha) \
+                - 1.0/alpha*tf.math.log(1 + alpha*mu) + actual*tf.math.log(alpha*mu/(1 + alpha * mu))
     nll = -1.0*likelihood
     return tf.reduce_mean(nll)
   
@@ -74,7 +70,7 @@ def Gumbel_loss(actual, a, b):
     return tf.reduce_mean(nll)
 
 
-# In[3]:
+# In[ ]:
 
 
 # Keras Custom Loss Subclasses -- Quantile Loss, RMSSE, RMSE, Negbin_NLL_Loss, Normal_NLL_Loss, Poisson_NLL_Loss, Gumbel_NLL_Loss
@@ -91,6 +87,25 @@ class QuantileLoss(tf.keras.losses.Loss):
         for i,q in enumerate(self.quantiles):
             error = tf.subtract(true, pred[:,:,i])
             losses += tf.maximum(q*error, (q-1)*error) 
+        return tf.reduce_mean(losses) 
+    
+    def get_config( self): 
+        base_config = super().get_config() 
+        return {** base_config, "quantiles": self.quantiles}
+
+class JointQuantileLoss(tf.keras.losses.Loss):
+    def __init__(self, quantiles = [0.1,0.5,0.9], ** kwargs): 
+        self.quantiles = quantiles 
+        super().__init__(** kwargs)
+    
+    def call(self, actuals, predictions):
+        pred = tf.cast(predictions, tf.float32)
+        true = tf.cast(tf.squeeze(actuals), tf.float32)
+        losses = tf.cast(tf.zeros_like(true), tf.float32)
+        for i,q in enumerate(self.quantiles):
+            error1 = tf.subtract(true, pred[:,:,0])
+            error2 = tf.subtract(pred[:,:,0], true)
+            losses += q*(tf.maximum(error1,0)) + (1-q)*(tf.maximum(error2,0)) 
         return tf.reduce_mean(losses) 
     
     def get_config( self): 
@@ -143,6 +158,9 @@ class QuantileLoss_v2(tf.keras.losses.Loss):
         losses = tf.cast(tf.zeros_like(y_true), tf.float32)
         for i,q in enumerate(self.quantiles):
             losses += self.compute_quantile_loss(y_true, y_pred[:,:,i], q)*self.quantile_weights[i]
+        
+        losses = tf.reduce_sum(losses, axis=-1)
+        
         return tf.reduce_mean(wts*losses)
     
     def compute_quantile_loss(self, y_true, y_pred, q):
@@ -176,13 +194,12 @@ class RMSSELoss(tf.keras.losses.Loss):
         super().__init__(** kwargs)
     
     def call(self, actuals, predictions):
-        seq_len_pred = tf.shape(predictions)[1]
-        seq_len_act = tf.shape(actuals)[1]
-
-        # pred = tf.cast(tf.squeeze(predictions), tf.float32)
-        pred = tf.cast(tf.reshape(predictions, [-1, seq_len_pred]), tf.float32)
-        # true = tf.cast(tf.squeeze(actuals), tf.float32)
-        true = tf.cast(tf.reshape(actuals, [-1, seq_len_act]), tf.float32)
+        seq_len = tf.shape(predictions)[1]
+        
+        #pred = tf.cast(tf.squeeze(predictions), tf.float32)
+        pred = tf.cast(tf.reshape(predictions, [-1, seq_len]), tf.float32)
+        #true = tf.cast(tf.squeeze(actuals), tf.float32)
+        true = tf.cast(tf.reshape(actuals, [-1,seq_len]), tf.float32)
         
         true_fh = true[:,-self.fh:]
         true_in = true[:,1:self.sl]
@@ -256,6 +273,34 @@ class Huber(tf.keras.losses.Loss):
     def get_config( self): 
         base_config = super().get_config() 
         return {** base_config}
+    
+class SMAPE(tf.keras.losses.Loss):
+    def __init__(self, epsilon=0.1, sample_weights=False, ** kwargs):
+        self.sample_weights = sample_weights
+        self.eps = epsilon
+        super().__init__(** kwargs)
+    
+    def call(self, actuals, pred):
+        if self.sample_weights:
+            output, wts = pred[0], pred[1]
+            wts = tf.reshape(wts, [-1,1]) 
+        else:
+            wts = 1.0
+            output = pred
+        seq_len = tf.shape(output)[1]    
+        
+        output = tf.cast(tf.reshape(output, [-1,seq_len]), tf.float32)
+        true = tf.cast(tf.reshape(actuals,[-1,seq_len]), tf.float32)
+        
+        summ = tf.maximum(tf.abs(true) + tf.abs(output) + self.eps, 0.5 + self.eps)
+        smape = tf.abs(true - output)/summ*2.0
+        wtd_smape = wts*tf.math.reduce_mean(smape, axis=1, keepdims=True)
+        
+        return tf.math.reduce_mean(wtd_smape)
+    
+    def get_config( self): 
+        base_config = super().get_config() 
+        return {** base_config}
       
         
 class Negbin_NLL_Loss(tf.keras.losses.Loss):
@@ -303,7 +348,79 @@ class Normal_NLL_Loss(tf.keras.losses.Loss):
         base_config = super().get_config() 
         return {** base_config}
       
-        
+class Tweedie_Loss(tf.keras.losses.Loss):
+    def __init__(self, p=1.5, log_scale=False, sample_weights=False, ** kwargs):
+        self.p = p
+        self.log_scale = log_scale
+        self.sample_weights = sample_weights
+        super().__init__(** kwargs)
+    
+    def call(self, actuals, pred):
+        if self.sample_weights:
+            output, wts = pred[0], pred[1]
+            wts = tf.reshape(wts, [-1,]) 
+        else:
+            wts = 1.0
+            output = pred
+
+        seq_len = tf.shape(output)[1] 
+        output = tf.cast(tf.reshape(output, [-1,seq_len]), tf.float32)
+        actuals = tf.cast(tf.reshape(actuals,[-1,seq_len]), tf.float32)
+
+        if self.log_scale:
+          # unexp outputs & actuals (undo log1p transform)
+          output = tf.math.expm1(output)
+          actuals = tf.math.expm1(actuals)
+
+        # apply min value threshold to o/p to prevent nan
+        eps = 1e-8
+        output = tf.math.maximum(output, eps)
+
+        loss = (-actuals * tf.math.pow(output, (1 - self.p)) / (1 - self.p) + tf.math.pow(output, (2 - self.p)) / (2 - self.p))
+        loss = tf.math.reduce_mean(loss, axis=-1)
+
+        return tf.math.reduce_mean(wts * loss)
+    
+    def get_config( self): 
+        base_config = super().get_config() 
+        return {** base_config} 
+
+class Poisson_Loss(tf.keras.losses.Loss):
+    def __init__(self, log_scale=False, sample_weights=False, ** kwargs):
+        self.log_scale = log_scale
+        self.sample_weights = sample_weights
+        super().__init__(** kwargs)
+    
+    def call(self, actuals, pred):
+        if self.sample_weights:
+            output, wts = pred[0], pred[1]
+            wts = tf.reshape(wts, [-1,]) 
+        else:
+            wts = 1.0
+            output = pred
+
+        seq_len = tf.shape(output)[1] 
+        output = tf.cast(tf.reshape(output, [-1,seq_len]), tf.float32)
+        actuals = tf.cast(tf.reshape(actuals,[-1,seq_len]), tf.float32)
+
+        if self.log_scale:
+          # unexp outputs & actuals (undo log1p transform)
+          output = tf.math.expm1(output)
+          actuals = tf.math.expm1(actuals)
+
+        # apply min value threshold to o/p to prevent nan
+        eps = 1e-8
+        output = tf.math.maximum(output, eps)
+        loss = output - actuals * tf.math.log(output)
+        loss = tf.math.reduce_mean(loss, axis=-1)
+
+        return tf.math.reduce_mean(wts * loss)
+    
+    def get_config( self): 
+        base_config = super().get_config() 
+        return {** base_config} 
+
+
 class Poisson_NLL_Loss(tf.keras.losses.Loss):
     def __init__(self, sample_weights=False, ** kwargs):
         self.sample_weights = sample_weights
@@ -350,24 +467,16 @@ class Students_NLL_Loss(tf.keras.losses.Loss):
         return {** base_config}      
 
 
-# In[12]:
-
-
 supported_losses = {'RMSE': ['loss_type: Point', 'Usage: RMSE(sample_weights=False)'],
                     'Huber': ['loss_type: Point', 'Usage: Huber(delta=1.0, sample_weights=False)'],
                     'Quantile': ['loss_type: Quantile', 'Usage: QuantileLoss_v2(quantiles=[0.5], sample_weights=False)'], 
                     'Normal': ['loss_type: Normal', 'Usage: Normal_NLL_Loss(sample_weights=False)'], 
-                    'Poisson': ['loss_type: Poisson', 'Usage: Poisson_NLL_Loss(sample_weights=False)'],
-                    'Negbin': ['loss_type: Negbin', 'Usage: Negbin_NLL_Loss(sample_weights=False)']
+                    'Poisson': ['loss_type: Poisson', 'Usage: Poisson_Loss(log_scale=False, sample_weights=False)'],
+                    'Negbin': ['loss_type: Negbin', 'Usage: Negbin_NLL_Loss(sample_weights=False)'],
+                    'Tweedie': ['loss_type: Tweedie', 'Usage: Tweedie_Loss(p=1.5, log_scale=False, sample_weights=False)']
                    }
 
 #print("Supported Loss Functions & Typical Usage:")
 #print("-----------------------------------------")
 #pprint.pprint(supported_losses)
-
-
-# In[ ]:
-
-
-
 

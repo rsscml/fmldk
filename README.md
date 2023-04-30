@@ -559,9 +559,9 @@ model.train(train_dataset,             # trainset obtain from data_objec using t
 ````
 ### Static Dataset & Options for Reproducibility
 
-# Packages ctfrv2_gpu, tft_gpu, sage_gpu contain dataset api for GPU based, reproducible model training.
+### Packages ctfrv2_gpu, tft_gpu, sage_gpu contain dataset api for GPU based, reproducible model training.
 
-# sample usage 
+### sample usage 
 data_obj = [tft_gpu | sage_gpu | ctfrv2_gpu].[tft | sage | ctfrv2]_dataset(col_dict=model_columns_dict, 
                                window_len=int(120), 
                                fh=int(28), 
@@ -574,15 +574,15 @@ data_obj = [tft_gpu | sage_gpu | ctfrv2_gpu].[tft | sage | ctfrv2]_dataset(col_d
                                PARALLEL_DATA_JOBS=6, 
                                PARALLEL_DATA_JOBS_BATCHSIZE=128)
 
-# where,
-# batch: no. of unique ids to process at a time
-# max_per_key_train_samples, max_per_key_test_samples: Max samples to extract from a single time series (default: -1, will extract all possible samples. For e.g. if the timeseries has 100 data points & a window_len of 50 is used, 100 - 50 = 50 samples will be extracted by default)
-# scaling_method: mean, standard & no (external) scaling supported
+#### where,
+#### batch: no. of unique ids to process at a time
+#### max_per_key_train_samples, max_per_key_test_samples: Max samples to extract from a single time series (default: -1, will extract all possible samples. For e.g. if the timeseries has 100 data points & a window_len of 50 is used, 100 - 50 = 50 samples will be extracted by default)
+#### scaling_method: mean, standard & no (external) scaling supported
 
 
-# models take additional args -- seed & deterministic_ops - for deterministic behaviour with some performance penalty
+#### models take additional args -- seed & deterministic_ops - for deterministic behaviour with some performance penalty
 
-# sample usage with sage (also available in tft, tft_gpu, ctfrv2_gpu packages)
+#### sample usage with sage (also available in tft, tft_gpu, ctfrv2_gpu packages)
 
 model = sage_gpu.SageModel(col_index_dict = col_index_dict,
                        vocab_dict = vocab,
@@ -598,9 +598,9 @@ model = sage_gpu.SageModel(col_index_dict = col_index_dict,
                        seed = <int>,
                        deterministic_ops = [True | False])
 
-# Tweedie loss fn. available & a revised Poisson loss fn.
+#### Tweedie loss fn. available & a revised Poisson loss fn.
 
-# sample usage
+#### sample usage
 Poisson: ['loss_type: Poisson', 'Usage: Poisson_Loss(log_scale=False, sample_weights=False)']
 Tweedie: ['loss_type: Tweedie', 'Usage: Tweedie_Loss(p=1.5, log_scale=False, sample_weights=False)']
 

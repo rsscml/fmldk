@@ -713,9 +713,9 @@ class sage_dataset:
         for col,val in zip(ignore_cols, ignore_pad_values):
             data[col] = np.where(data[self.time_index_col]>self.history_till, val, data[col])
         
-        arr, pad_arr, id_arr, date_arr, scale_arr = self.select_all_arrs(data)
+        arr, pad_arr, id_arr, date_arr, scale_arr, known_scale_arr, unknown_scale_arr = self.select_all_arrs(data)
      
-        model_in, model_out, scale, _ = self.preprocess(arr, pad_arr, scale_arr, mode='infer')
+        model_in, model_out, scale, _ = self.preprocess(arr, pad_arr, scale_arr, known_scale_arr, unknown_scale_arr, mode='infer')
         input_tensor = tf.convert_to_tensor(model_in.astype(str), dtype=tf.string)
         
         return [input_tensor, scale, id_arr, date_arr]

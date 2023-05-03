@@ -9,7 +9,7 @@ long_description  = (this_directory / "README.md").read_text()
 # This call to setup() does all the work
 setup(
     name="fmldk",
-    version="1.2.0",
+    version="1.2.1",
     description="Forecast ML library",
     long_description=long_description,
     long_description_content_type="text/markdown",

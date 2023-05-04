@@ -245,7 +245,7 @@ class sage_dataset:
         gdf = gdf.reset_index(drop=True)
         delta = len(gdf) - self.window_len
 
-        num_samples = max(1,len(gdf) - self.window_len)
+        num_samples = max(1, delta+1)
 
         if mode == 'train':
           max_samples = num_samples if self.max_key_train_samples == -1 else self.max_key_train_samples
@@ -279,8 +279,11 @@ class sage_dataset:
         else:
             pad_len = 0
             sample_interval = max(1, int(num_samples/max_samples))
-            for i in range(min(max_samples, num_samples)):
-              arr = gdf.loc[i*sample_interval:i*sample_interval + self.window_len - 1, self.col_list].reset_index(drop=True).values
+            # take only the most recent max_samples
+            start_pos = max(0, int(len(gdf) - (sample_interval * (max_samples - 1) + self.window_len)))
+
+            for i in range(start_pos, num_samples, sample_interval):
+              arr = gdf.loc[i:i + self.window_len - 1, self.col_list].reset_index(drop=True).values
               arr_list.append(arr)
               pad_list.append([pad_len])
               scale_list.append(scale)

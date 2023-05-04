@@ -895,7 +895,7 @@ class SageTransformer_Model(tf.keras.Model):
         else:
             self.static_variables = True
         
-        self.model = ConvVarTransformer(static_variables = self.static_variables,
+        self.model = SageTransformer(static_variables = self.static_variables,
                                     num_layers = num_layers,
                                     d_model = d_model,
                                     num_heads = num_heads, 

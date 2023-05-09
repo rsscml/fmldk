@@ -597,8 +597,8 @@ class sage_dataset:
         #print("start ... ")
         #print('RAM Used (GB):', psutil.virtual_memory()[3]/1000000000)
 
-        num_features = len(self.col_list) + 3 # rel_age, scale_in, mask 
-        scale_dims = 1 if self.scaling_method in ['mean_scaling','no_scaling'] else 2
+        scale_dims = 1 if self.scaling_method in ['mean_scaling', 'no_scaling'] else 2
+        num_features = len(self.col_list) + scale_dims + 2  # rel_age, scale_in, mask
 
         trainset = tf.data.Dataset.from_generator(lambda: self.data_generator(data=data, mode='train'),
                                                       output_signature=(tf.TensorSpec(shape=(None, self.window_len, num_features), dtype=tf.string),

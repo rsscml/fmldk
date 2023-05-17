@@ -1123,8 +1123,7 @@ def SageTransformer_Train(model,
                       clipnorm,
                       min_delta,
                       shuffle,
-                      deterministic,
-                      use_metric_for_convergence):
+                      deterministic):
     """
      train_dataset, test_dataset: tf.data.Dataset iterator for train & test datasets 
      loss_type: One of ['Point','Quantile','Normal','Poisson','Negbin']
@@ -1259,50 +1258,6 @@ def SageTransformer_Train(model,
         else:
             raise ValueError("Invalid loss_type specified!")        
         return loss, o
-
-    def rescale_io(y_true, y_pred, scale):
-
-        out_len = y_true.shape.as_list()[1]
-        s_dim = scale.shape.as_list()[-1]
-
-        if loss_type in ['Point', 'Tweedie', 'Poisson']:
-            if s_dim == 1:
-                y_true_rescaled = y_true * scale[:, -out_len:, :]
-                y_pred_rescaled = y_pred * scale[:, -out_len:, :]
-            else:
-                s_mean = scale[:, -out_len:, 0:1]
-                s_std = scale[:, -out_len:, 1:2]
-                y_true_rescaled = y_true * s_std + s_mean
-                y_pred_rescaled = y_pred * s_std + s_mean
-
-        elif loss_type in ['Quantile']:
-            if s_dim == 1:
-                y_true_rescaled = y_true * scale[:, -out_len:, :]
-                y_pred_rescaled = y_pred * scale[:, -out_len:, :]
-            else:
-                s_mean = scale[:, -out_len:, 0:1]
-                s_std = scale[:, -out_len:, 1:2]
-                y_true_rescaled = y_true * s_std + s_mean
-                # rescale each quantile
-                n_quantiles = y_pred.shape.as_list()[-1]
-                y_list = []
-                for q in range(n_quantiles):
-                    y = y_pred[:, :, q:q + 1] * s_std + s_mean
-                    y_list.append(y)
-                y_pred_rescaled = tf.concat(y_list, axis=-1)
-
-        elif loss_type in ['Normal', 'Negbin']:
-            # predictions are already rescaled
-            if s_dim == 1:
-                y_true_rescaled = y_true * scale[:, -out_len:, :]
-                y_pred_rescaled = y_pred
-            else:
-                s_mean = scale[:, -out_len:, 0:1]
-                s_std = scale[:, -out_len:, 1:2]
-                y_true_rescaled = y_true * s_std + s_mean
-                y_pred_rescaled = y_pred
-
-        return y_true_rescaled, y_pred_rescaled
        
     # training specific vars
     if opt is None:
@@ -1458,18 +1413,12 @@ def SageTransformer_Train(model,
             train_loss, train_out = trainstep(model, optimizer, x_batch, y_batch, scale, wts, training=True)
             out_len = tf.shape(train_out)[1]
             train_loss_avg.update_state(train_loss)
-
-            # rescale io & update metric
-            y_true, y_pred = rescale_io(y_batch, train_out, scale)
-            train_metric.update_state(y_true, y_pred)
-
-            #if loss_type in ['Normal','Negbin']:
-            #  train_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], train_out)
-            #elif loss_type in ['Point','Tweedie','Poisson']:
-            #  train_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], train_out*scale[:,-out_len:,:])
-            #elif loss_type in ['Quantile']:
-            #  train_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], train_out[:,-out_len:,0:1]*scale[:,-out_len:,:])
-
+            if loss_type in ['Normal','Negbin']:
+              train_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], train_out)
+            elif loss_type in ['Point','Tweedie','Poisson']:
+              train_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], train_out*scale[:,-out_len:,:])
+            elif loss_type in ['Quantile']:
+              train_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], train_out[:,-out_len:,0:1]*scale[:,-out_len:,:])
             with train_summary_writer.as_default():
               tf.summary.scalar('loss', train_loss_avg.result(), step=(i+1)*(epoch+1))
               tf.summary.scalar('accuracy', train_metric.result(), step=(i+1)*(epoch+1))
@@ -1478,18 +1427,12 @@ def SageTransformer_Train(model,
             test_loss, test_out = trainstep(model, optimizer, x_batch, y_batch, scale, wts, training=False)
             out_len = tf.shape(test_out)[1]
             test_loss_avg.update_state(test_loss)
-
-            # rescale io
-            y_true, y_pred = rescale_io(y_batch, test_out, scale)
-            test_metric.update_state(y_true, y_pred)
-
-            #if loss_type in ['Normal','Negbin']:
-            #  test_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], test_out)
-            #elif loss_type in ['Point','Tweedie','Poisson']:
-            #  test_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], test_out*scale[:,-out_len:,:])
-            #elif loss_type in ['Quantile']:
-            #  test_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], test_out[:,-out_len:,0:1]*scale[:,-out_len:,:])
-
+            if loss_type in ['Normal','Negbin']:
+              test_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], test_out)
+            elif loss_type in ['Point','Tweedie','Poisson']:
+              test_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], test_out*scale[:,-out_len:,:])
+            elif loss_type in ['Quantile']:
+              test_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], test_out[:,-out_len:,0:1]*scale[:,-out_len:,:])
             with test_summary_writer.as_default():
               tf.summary.scalar('loss', test_loss_avg.result(), step=(i+1)*(epoch+1))
               tf.summary.scalar('accuracy', test_metric.result(), step=(i+1)*(epoch+1))
@@ -1523,16 +1466,9 @@ def SageTransformer_Train(model,
           current_min_loss = np.min(test_loss_results)
           delta = current_min_loss - prev_min_loss
 
-          if use_metric_for_convergence:
-              # decide on convergence on the basis of both loss & metric
-              save_condition = ((test_loss_results[epoch] == np.min(test_loss_results)) and (-delta > min_delta) and (test_metric_results[epoch] == np.min(test_metric_results))) or (epoch == 0)
-          else:
-              # decide on convergence on the basis of loss only
-              save_condition = ((test_loss_results[epoch] == np.min(test_loss_results)) and (-delta > min_delta)) or (epoch == 0)
-
           print("Improvement delta (min_delta {}):  {}".format(min_delta, delta))
           # track & save best model
-          if save_condition:
+          if ((test_loss_results[epoch]==np.min(test_loss_results)) and (-delta > min_delta)) or (epoch == 0):
               best_model = model_path
               tf.keras.models.save_model(model, model_path)
               # reset time_since_improvement
@@ -1575,18 +1511,12 @@ def SageTransformer_Train(model,
                   train_loss, train_out = trainstep(model, optimizer, x_batch, y_batch, scale, wts, training=True)
                   out_len = tf.shape(train_out)[1]
                   train_loss_avg.update_state(train_loss)
-
-                  # rescale io & update metric
-                  y_true, y_pred = rescale_io(y_batch, train_out, scale)
-                  train_metric.update_state(y_true, y_pred)
-
-                  #if loss_type in ['Normal','Negbin']:
-                  #    train_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], train_out)
-                  #elif loss_type in ['Point','Tweedie','Poisson']:
-                  #    train_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], train_out*scale[:,-out_len:,:])
-                  #elif loss_type in ['Quantile']:
-                  #    train_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], train_out[:,-out_len:,0:1]*scale[:,-out_len:,:])
-
+                  if loss_type in ['Normal','Negbin']:
+                      train_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], train_out)
+                  elif loss_type in ['Point','Tweedie','Poisson']:
+                      train_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], train_out*scale[:,-out_len:,:])
+                  elif loss_type in ['Quantile']:
+                      train_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], train_out[:,-out_len:,0:1]*scale[:,-out_len:,:])
                   with train_summary_writer.as_default():
                       tf.summary.scalar('loss', train_loss_avg.result(), step=(step+1)*(epoch+1))
                       tf.summary.scalar('accuracy', train_metric.result(), step=(step+1)*(epoch+1))
@@ -1598,23 +1528,21 @@ def SageTransformer_Train(model,
                   test_loss, test_out = teststep(model, x_batch, y_batch, scale, wts, training=False)
                   out_len = tf.shape(test_out)[1]
                   test_loss_avg.update_state(test_loss)
-
-                  # rescale io
-                  y_true, y_pred = rescale_io(y_batch, test_out, scale)
-                  test_metric.update_state(y_true, y_pred)
-
-                  #if loss_type in ['Normal','Negbin']:
-                  #    test_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], test_out)
-                  #elif loss_type in ['Point','Tweedie','Poisson']:
-                  #    test_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], test_out*scale[:,-out_len:,:])
-                  #elif loss_type in ['Quantile']:
-                  #    test_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], test_out[:,-out_len:,0:1]*scale[:,-out_len:,:])
-
+                  if loss_type in ['Normal','Negbin']:
+                      test_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], test_out)
+                  elif loss_type in ['Point','Tweedie','Poisson']:
+                      test_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], test_out*scale[:,-out_len:,:])
+                  elif loss_type in ['Quantile']:
+                      test_metric.update_state(y_batch[:,-out_len:,:]*scale[:,-out_len:,:], test_out[:,-out_len:,0:1]*scale[:,-out_len:,:])
                   with test_summary_writer.as_default():
                       tf.summary.scalar('loss', test_loss_avg.result(), step=(step+1)*(epoch+1))
                       tf.summary.scalar('accuracy', test_metric.result(), step=(step+1)*(epoch+1))
 
-          print("Epoch: {}, train_loss: {}, test_loss: {}, train_metric: {}, test_metric: {}".format(epoch, train_loss_avg.result().numpy(), test_loss_avg.result().numpy(), train_metric.result().numpy(), test_metric.result().numpy()))
+          print("Epoch: {}, train_loss: {}, test_loss: {}, train_metric: {}, test_metric: {}".format(epoch, 
+                                                                                                      train_loss_avg.result().numpy(),
+                                                                                                      test_loss_avg.result().numpy(),
+                                                                                                      train_metric.result().numpy(),
+                                                                                                      test_metric.result().numpy()))
 
           # record losses & metric in lists
           train_loss_results.append(train_loss_avg.result().numpy())
@@ -1638,17 +1566,10 @@ def SageTransformer_Train(model,
             prev_min_loss = np.min(test_loss_results[:-1])
           current_min_loss = np.min(test_loss_results)
           delta = current_min_loss - prev_min_loss
-
-          if use_metric_for_convergence:
-              # decide on convergence on the basis of both loss & metric
-              save_condition = ((test_loss_results[epoch] == np.min(test_loss_results)) and (-delta > min_delta) and (test_metric_results[epoch] == np.min(test_metric_results))) or (epoch == 0)
-          else:
-              # decide on convergence on the basis of loss only
-              save_condition = ((test_loss_results[epoch] == np.min(test_loss_results)) and (-delta > min_delta)) or (epoch == 0)
-
+         
           print("Improvement delta (min_delta {}):  {}".format(min_delta, delta))
           # track & save best model
-          if save_condition:
+          if ((test_loss_results[epoch]==np.min(test_loss_results)) and (-delta > min_delta)) or  (epoch == 0):
               best_model = model_path
               tf.keras.models.save_model(model, model_path)
               # reset time_since_improvement
@@ -1883,8 +1804,7 @@ class SageModel:
               opt=None,
               clipnorm=None,
               min_delta=0.0001,
-              shuffle=True,
-              use_metric_for_convergence=False):
+              shuffle=True):
         
         if load_model is None:
             # Initialize Weights
@@ -1927,8 +1847,7 @@ class SageModel:
                                           clipnorm,
                                           min_delta,
                                           shuffle,
-                                          self.allow_deterministic_ops,
-                                          use_metric_for_convergence )
+                                          self.allow_deterministic_ops)
         return best_model
     
     def load(self, model_path):

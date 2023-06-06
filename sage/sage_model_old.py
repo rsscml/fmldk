@@ -1335,23 +1335,21 @@ def SageTransformer_Train(model,
         rstate.shuffle(arr)
     
     if prefill_buffers:
-      print("prefetching training samples ... ")
       # get batch size
       batch_size = 0
       for x,y,s,w in train_dataset.take(1):
         batch_size = int(x.shape[0])
 
+      print("prefetching training samples ... ")
       x_train = []
       y_train = []
       train_scale = []
       train_wts = []
-      #num_train_batches = 0
       for step, (x_batch, y_batch, scale, wts) in enumerate(train_dataset):
         x_train.append(x_batch)
         y_train.append(y_batch)
         train_scale.append(scale)
         train_wts.append(wts)
-        #num_train_batches = num_train_batches + m.floor(batch_size/train_batch_size)
         if (step+1)*batch_size >= num_train_samples:
           break
        
@@ -1367,13 +1365,11 @@ def SageTransformer_Train(model,
       y_test = []
       test_scale = []
       test_wts = []
-      #num_test_batches = 0
       for step, (x_batch, y_batch, scale, wts) in enumerate(test_dataset):
         x_test.append(x_batch)
         y_test.append(y_batch)
         test_scale.append(scale)
         test_wts.append(wts)
-        #num_test_batches = num_test_batches + m.floor(batch_size/train_batch_size)
         if (step+1)*batch_size >= num_test_samples:
           break
 

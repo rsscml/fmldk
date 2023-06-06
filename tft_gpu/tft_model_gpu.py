@@ -63,6 +63,55 @@ def GumbelSample(a, b, n_samples=1):
     dist = tfd.Gumbel(loc=a, scale=b)
     return tf.reduce_mean(tf.stop_gradient(dist.sample(sample_shape=n_samples)), axis=0)
 
+# Quantile Risk Metric (MSE & MAE Metrics are available out of the box in tf)
+class q_risk(tf.keras.metrics.Metric):
+    def __init__(self, name='q_risk', q=[0.5], **kwargs):
+        super(q_risk, self).__init__(name=name, **kwargs)
+        self.q = q
+        self.qrisk = self.add_weight(name='qrisk_' + str(q), initializer='zeros')
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        y_true = tf.cast(y_true, tf.float32)
+        y_pred = tf.cast(y_pred, tf.float32)
+
+        n_quantiles = y_pred.shape.as_list()[-1]
+        assert len(self.q) == n_quantiles
+
+        qr = 0
+        for q, qr_quantile in zip(range(n_quantiles), self.q):
+            qr += self.q_risk_function(y_true, y_pred[:, :, q:q + 1], qr_quantile)
+
+        if sample_weight is not None:
+            raise ValueError("Weighted q-risk not implemented.")
+            #sample_weight = tf.cast(sample_weight, self.dtype)
+            #sample_weight = tf.broadcast_to(sample_weight, values.shape)
+            #values = tf.multiply(values, sample_weight)
+
+        self.qrisk.assign_add(tf.reduce_mean(qr))
+
+    def q_risk_function(self, y_true, y_pred, qr_quantile):
+        y_true = tf.cast(y_true, tf.float32)
+        y_pred = tf.cast(y_pred, tf.float32)
+        qr = qr_quantile * tf.maximum(tf.cast(0, tf.float32), (y_true - y_pred)) + (1 - qr_quantile) * tf.maximum(
+            tf.cast(0, tf.float32), (y_pred - y_true))
+        qr_scaled = 2 * tf.reduce_mean(qr) / tf.reduce_mean(tf.abs(y_true))
+
+        return qr_scaled
+
+    def result(self):
+        return self.qrisk
+
+
+def q_risk_function(y_true, y_pred, qr_quantile):
+    y_true = tf.cast(y_true, tf.float32)
+    y_pred = tf.cast(y_pred, tf.float32)
+
+    qr = qr_quantile * tf.maximum(tf.cast(0, tf.float32), (y_true - y_pred)) + (1 - qr_quantile) * tf.maximum(
+        tf.cast(0, tf.float32), (y_pred - y_true))
+    qr_scaled = 2 * tf.reduce_mean(qr) / tf.reduce_mean(tf.abs(y_true))
+
+    return qr_scaled
+
 
 # Self-Attention
 def ScaledDotProductAttention(q, k, v, causal_mask, padding_mask):
@@ -1217,7 +1266,52 @@ def TFT_Train(model,
         else:
             raise ValueError("Invalid loss_type specified!")        
         return loss, o
-       
+
+    def rescale_io(y_true, y_pred, scale):
+
+        out_len = y_true.shape.as_list()[1]
+        s_dim = scale.shape.as_list()[-1]
+
+        if loss_type in ['Point', 'Tweedie', 'Poisson']:
+            if s_dim == 1:
+                y_true_rescaled = y_true * scale[:, -out_len:, :]
+                y_pred_rescaled = y_pred * scale[:, -out_len:, :]
+            else:
+                s_mean = scale[:, -out_len:, 0:1]
+                s_std = scale[:, -out_len:, 1:2]
+                y_true_rescaled = y_true * s_std + s_mean
+                y_pred_rescaled = y_pred * s_std + s_mean
+
+        elif loss_type in ['Quantile']:
+            if s_dim == 1:
+                y_true_rescaled = y_true * scale[:, -out_len:, :]
+                y_pred_rescaled = y_pred * scale[:, -out_len:, :]
+            else:
+                s_mean = scale[:, -out_len:, 0:1]
+                s_std = scale[:, -out_len:, 1:2]
+                y_true_rescaled = y_true * s_std + s_mean
+                # rescale each quantile
+                n_quantiles = y_pred.shape.as_list()[-1]
+                y_list = []
+                for q in range(n_quantiles):
+                    y = y_pred[:, :, q:q + 1] * s_std + s_mean
+                    y_list.append(y)
+                y_pred_rescaled = tf.concat(y_list, axis=-1)
+
+        elif loss_type in ['Normal', 'Negbin']:
+            # predictions are already rescaled
+            if s_dim == 1:
+                y_true_rescaled = y_true * scale[:, -out_len:, :]
+                y_pred_rescaled = y_pred
+            else:
+                s_mean = scale[:, -out_len:, 0:1]
+                s_std = scale[:, -out_len:, 1:2]
+                y_true_rescaled = y_true * s_std + s_mean
+                y_pred_rescaled = y_pred
+
+        return y_true_rescaled, y_pred_rescaled
+
+
     # training specific vars
     if opt is None:
         optimizer = tf.keras.optimizers.Nadam(learning_rate=learning_rate)
@@ -1228,7 +1322,7 @@ def TFT_Train(model,
     if clipnorm is None:
         pass
     else:
-        optimizer.global_clipnorm = clipnorm
+        optimizer.clipnorm = clipnorm
        
     print("lr: ",optimizer.learning_rate.numpy())
     
@@ -1239,9 +1333,14 @@ def TFT_Train(model,
     if metric == 'MAE':  
         train_metric = tf.keras.metrics.MeanAbsoluteError('train_mae')
         test_metric = tf.keras.metrics.MeanAbsoluteError('test_mae')
+
     elif metric == 'MSE':
         train_metric = tf.keras.metrics.MeanSquaredError('train_mse')
         test_metric = tf.keras.metrics.MeanSquaredError('test_mse')
+
+    elif isinstance(metric, list):
+        train_metric = q_risk(name='train_qrisk', q=metric)
+        test_metric = q_risk(name='test_qrisk', q=metric)
     else:
         raise ValueError("{}: Not a Supported Metric".format(metric))
             
@@ -1330,40 +1429,50 @@ def TFT_Train(model,
         trainset = tf.data.Dataset.from_tensor_slices((x_train, y_train, train_scale, train_wts))
         trainset = trainset.shuffle(buffer_size=int(x_train.shape[0]), reshuffle_each_iteration=shuffle)
         trainset = trainset.batch(batch_size=train_batch_size, drop_remainder=False, num_parallel_calls=tf.data.AUTOTUNE, deterministic=deterministic)
-        trainset = trainset.prefetch(buffer_size = tf.data.AUTOTUNE)
+        trainset = trainset.prefetch(buffer_size=tf.data.AUTOTUNE)
         
         testset = tf.data.Dataset.from_tensor_slices((x_test, y_test, test_scale, test_wts))
-        testset = testset.shuffle(buffer_size=int(x_test.shape[0]), reshuffle_each_iteration=False)
+        testset = testset.shuffle(buffer_size=int(x_test.shape[0]), reshuffle_each_iteration=shuffle)
         testset = testset.batch(batch_size=test_batch_size, drop_remainder=False, num_parallel_calls=tf.data.AUTOTUNE, deterministic=deterministic)
-        testset = testset.prefetch(buffer_size = tf.data.AUTOTUNE)
+        testset = testset.prefetch(buffer_size=tf.data.AUTOTUNE)
         
         for epoch in range(max_epochs):
             print("Epoch {}/{}".format(epoch, max_epochs))
            
             for i, (x_batch, y_batch, scale, wts) in enumerate(trainset):
                 train_loss, train_out = trainstep(model, optimizer, x_batch, y_batch, scale, wts, training=True)
-                out_len = tf.shape(train_out)[1]
                 train_loss_avg.update_state(train_loss)
-                if loss_type in ['Normal', 'Negbin']:
-                    train_metric.update_state(y_batch[:, -out_len:, :] * scale[:, -out_len:, :], train_out)
-                elif loss_type in ['Point', 'Poisson', 'Tweedie']:
-                    train_metric.update_state(y_batch[:, -out_len:, :] * scale[:, -out_len:, :], train_out * scale[:, -out_len:, :])
-                elif loss_type in ['Quantile']:
-                    train_metric.update_state(y_batch[:, -out_len:, :] * scale[:, -out_len:, :], train_out[:, -out_len:, 0:1] * scale[:, -out_len:, :])
+
+                # rescale io & update metric
+                y_true, y_pred = rescale_io(y_batch, train_out, scale)
+                train_metric.update_state(y_true, y_pred)
+
+                #if loss_type in ['Normal', 'Negbin']:
+                #    train_metric.update_state(y_batch[:, -out_len:, :] * scale[:, -out_len:, :], train_out)
+                #elif loss_type in ['Point', 'Poisson', 'Tweedie']:
+                #    train_metric.update_state(y_batch[:, -out_len:, :] * scale[:, -out_len:, :], train_out * scale[:, -out_len:, :])
+                #elif loss_type in ['Quantile']:
+                #    train_metric.update_state(y_batch[:, -out_len:, :] * scale[:, -out_len:, :], train_out[:, -out_len:, 0:1] * scale[:, -out_len:, :])
+
                 with train_summary_writer.as_default():
                     tf.summary.scalar('loss', train_loss_avg.result(), step=(i+1)*(epoch+1))
                     tf.summary.scalar('accuracy', train_metric.result(), step=(i+1)*(epoch+1))
 
             for i, (x_batch, y_batch, scale, wts) in enumerate(testset):
-                test_loss, test_out = trainstep(model, optimizer, x_batch, y_batch, scale, wts, training=False)
-                out_len = tf.shape(test_out)[1]
+                test_loss, test_out = teststep(model, x_batch, y_batch, scale, wts, training=False)
                 test_loss_avg.update_state(test_loss)
-                if loss_type in ['Normal', 'Negbin']:
-                    test_metric.update_state(y_batch[:, -out_len:, :] * scale[:, -out_len:, :], test_out)
-                elif loss_type in ['Point', 'Tweedie', 'Poisson']:
-                    test_metric.update_state(y_batch[:, -out_len:, :] * scale[:, -out_len:, :], test_out * scale[:, -out_len:, :])
-                elif loss_type in ['Quantile']:
-                    test_metric.update_state(y_batch[:, -out_len:, :] * scale[:, -out_len:, :], test_out[:, -out_len:, 0:1] * scale[:, -out_len:, :])
+
+                # rescale io
+                y_true, y_pred = rescale_io(y_batch, test_out, scale)
+                test_metric.update_state(y_true, y_pred)
+
+                #if loss_type in ['Normal', 'Negbin']:
+                #    test_metric.update_state(y_batch[:, -out_len:, :] * scale[:, -out_len:, :], test_out)
+                #elif loss_type in ['Point', 'Tweedie', 'Poisson']:
+                #    test_metric.update_state(y_batch[:, -out_len:, :] * scale[:, -out_len:, :], test_out * scale[:, -out_len:, :])
+                #elif loss_type in ['Quantile']:
+                #    test_metric.update_state(y_batch[:, -out_len:, :] * scale[:, -out_len:, :], test_out[:, -out_len:, 0:1] * scale[:, -out_len:, :])
+
                 with test_summary_writer.as_default():
                     tf.summary.scalar('loss', test_loss_avg.result(), step=(i+1)*(epoch+1))
                     tf.summary.scalar('accuracy', test_metric.result(), step=(i+1)*(epoch+1))
@@ -1399,13 +1508,17 @@ def TFT_Train(model,
 
             print("Improvement delta (min_delta {}):  {}".format(min_delta, delta))
             # track & save best model
-            if ((test_loss_results[epoch] == np.min(test_loss_results)) and (-delta > min_delta)) or (epoch == 0):
+            if ((test_loss_results[-1] == np.min(test_loss_results)) and (-delta > min_delta)) or (epoch == 0):
                 best_model = model_path
                 tf.keras.models.save_model(model, model_path)
                 # reset time_since_improvement
                 time_since_improvement = 0
             else:
                 time_since_improvement += 1
+                train_loss_results.pop()
+                test_loss_results.pop()
+                train_metric_results.pop()
+                test_metric_results.pop()
 
             model_tracker_file.write('best_model path after epochs ' + str(epoch) + ': ' + best_model + '\n')
             print("Best Model: ", best_model)
@@ -1627,7 +1740,7 @@ class Temporal_Fusion_Transformer:
               learning_rate=0.0001,
               max_epochs=100,
               min_epochs=10,
-              prefill_buffers=False,
+              prefill_buffers=True,
               num_train_samples=200000,
               num_test_samples=50000,
               train_batch_size=64,

@@ -439,7 +439,7 @@ class variable_selection_temporal(tf.keras.layers.Layer):
         self.grn_var = [tft_grn_layer(hidden_layer_size=self.hidden_layer_size,
                                       output_size=None,
                                       dropout_rate=self.dropout_rate,
-                                      use_time_distributed=False,
+                                      use_time_distributed=True,
                                       additional_context=None,
                                       return_gate=False) for _ in range(self.num_vars)]
 
